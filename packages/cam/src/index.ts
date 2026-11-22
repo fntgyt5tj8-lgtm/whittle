@@ -2,7 +2,7 @@ export { CAM_TOOL_COMPONENT_ROLES } from "./model";
 export type { CamToolComponent, CamToolComponentRole, CamToolPosition } from "./model";
 export type { CamBodyRole, CamCadSource, CamContextFrame, CamGeometryRef, CamWorkpieceContext, CamMachiningStage, CamPlanItem, CamPlanStage, CamProcess, CamProject, CamResult, CamSetup, CircularProfileSettings, FlatEndmill } from "./model";
 export { addPlanStage, addProcess, addSetup, createProject, getProcessPlan, migrateWorkpieceContexts } from "./operations";
-export { validateProject } from "./validation";
+export { validateOperationTooling, validateProject } from "./validation";
 export { CAM_WORLD, isCamFrame, transformCamVector } from "./geometry/frames";
 export type { CamFrame, CamVector } from "./geometry/frames";
 export type { CircularProfileGeometry } from "./geometry/circle";

@@ -254,6 +254,34 @@ try {
   assertCoordinates(datumApt, "CIRCLE", [-17, 8, 7, 0, 0, 1, 10]);
   assert.equal([...datumApt.matchAll(/^CIRCLE\//gm)].length, 4);
 
+  const toolsTab = page.getByRole("group", { name: "Manufacturing browser" }).getByRole("button", { name: "Tools", exact: true });
+  await toolsTab.click();
+  await properties.getByRole("button", { name: "Add Tool Position" }).click();
+  const positions = page.getByRole("region", { name: "Tool positions" });
+  const toolId = await page.evaluate(() => window.whittle.useApp.getState().doc.manufacturing.toolPositions[0].id);
+  const diameter = properties.getByLabel("Flat endmill diameter (mm)");
+  await diameter.fill("4");
+  await diameter.press("Tab");
+  const third = history.getByRole("button", { name: "Profile 3 · Main machining" });
+  const toolPicker = properties.getByLabel("Tool position", { exact: true });
+  const spindle = properties.getByLabel("Spindle speed (rpm)");
+  await third.click();
+  await toolPicker.selectOption(toolId);
+  await spindle.fill("-9000");
+  await properties.getByRole("alert").getByText(/positive spindle speed/).waitFor();
+  await spindle.fill("9000");
+  assert.equal(await exportProfile(), datumApt);
+  await first.click();
+  assert.equal(await toolPicker.inputValue(), "");
+  assert.equal(await spindle.inputValue(), "");
+  await positions.getByRole("button", { name: "T01 — Tool", exact: true }).click();
+  const number = properties.getByLabel("Tool number");
+  await number.fill("7");
+  await number.press("Tab");
+  await third.click();
+  assert.equal(await toolPicker.inputValue(), toolId);
+  assert.equal(await toolPicker.locator("option:checked").textContent(), "T07 — Tool");
+
   await page.getByRole("button", { name: "Save CAM", exact: true }).click();
   await page.waitForFunction(() => {
     const { fileName, dirty } = window.whittle.useApp.getState();
@@ -278,8 +306,34 @@ try {
   assert.deepEqual(await tiles.allTextContents(), [...expected, "Profile 3 · Main machining"]);
   await history.getByRole("button", { name: "Profile 3 · Main machining" }).click();
   assert.equal(await contextPicker.inputValue(), contextIds[1]);
+  assert.equal(await toolPicker.inputValue(), toolId);
+  assert.equal(await spindle.inputValue(), "9000");
+  assert.equal(await properties.getByLabel("Cut feed (mm/min)").inputValue(), "200");
+  assert.equal(await properties.getByLabel("Plunge feed (mm/min)").inputValue(), "50");
+  assert.equal(await exportProfile(), datumApt);
+  await toolsTab.click();
+  await positions.getByRole("button", { name: "T07 — Tool", exact: true }).click();
+  await properties.getByRole("button", { name: "Delete Tool", exact: true }).click();
+  await third.click();
+  assert.equal(await toolPicker.inputValue(), toolId);
+  assert.equal(await toolPicker.locator("option:checked").textContent(), "Tool position unavailable");
+  await properties.getByRole("alert").getByText(/references a missing tool position/).waitFor();
+  const missingToolDownload = () => assert.fail("A missing tool position must not export APT-CL");
+  page.on("download", missingToolDownload);
+  await properties.getByRole("button", { name: "Export APT-CL" }).click();
+  await properties.getByRole("alert").getByText(/references a missing tool position/).last().waitFor();
+  page.off("download", missingToolDownload);
+  await page.getByRole("button", { name: "Save CAM", exact: true }).click();
+  await page.waitForFunction(() => !window.whittle.useApp.getState().dirty);
+  await page.getByRole("button", { name: "Open CAM", exact: true }).click();
+  await page.waitForFunction(() => window.whittle.useApp.getState().camBrowserTab === "browser");
+  await third.click();
+  assert.equal(await toolPicker.inputValue(), toolId);
+  assert.equal(await spindle.inputValue(), "9000");
+  await toolPicker.selectOption({ label: "Unassigned" });
   assert.equal(await properties.getByLabel("Flat endmill diameter (mm)").inputValue(), "4");
   assert.equal(await exportProfile(), datumApt);
+  console.log("ok  Operation tool IDs, cutting conditions, deleted tool recovery and deterministic APT-CL");
 
   const savedContexts = await page.evaluate(() => {
     const { doc } = window.whittle.useApp.getState();

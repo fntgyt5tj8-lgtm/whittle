@@ -130,6 +130,25 @@ try {
   await properties.getByText(/X 10, Y 0, Z 0/).waitFor();
   await properties.getByLabel("Visible", { exact: true }).uncheck();
   const holderId = tool.components[1].bodyId;
+  const visibleBodies = () => page.evaluate(() => [...window.whittle.viewportRef.current.bodies]
+    .filter(([, view]) => view.visible).map(([id]) => id).sort());
+  const checkVisibility = (ids) => page.waitForFunction((ids) => {
+    const visible = [...window.whittle.viewportRef.current.bodies]
+      .filter(([, view]) => view.visible).map(([id]) => id).sort();
+    return JSON.stringify(visible) === JSON.stringify(ids);
+  }, ids);
+  const bodyIds = tool.components.map(({ bodyId }) => bodyId).sort();
+  const beforeIsolation = await visibleBodies();
+  assert.ok(beforeIsolation.includes(tool.components[0].bodyId) && !beforeIsolation.includes(holderId));
+  assert.ok(beforeIsolation.some((id) => !bodyIds.includes(id)));
+  await position.click();
+  const isolate = properties.getByRole("button", { name: "Isolate Tool", exact: true });
+  const restore = page.getByRole("button", { name: "Restore Visibility", exact: true });
+  await isolate.click();
+  await checkVisibility(bodyIds);
+  assert.equal(await page.evaluate((id) => window.whittle.useApp.getState().doc.bodies[id].visible, holderId), false);
+  await restore.click();
+  await checkVisibility(beforeIsolation);
 
   await positions.getByRole("button", { name: "TIP", exact: true }).click();
   const tipPanel = page.getByRole("complementary", { name: "TIP properties" });
@@ -159,6 +178,8 @@ try {
     return doc === builtDoc && regen?.planes.find((frame) => frame.id === id)?.origin[0] === 30;
   }, tool.tipCsysId);
 
+  await isolate.click();
+  await checkVisibility(bodyIds);
   await manufacturing.click();
   await page.getByRole("button", { name: "Save CAM", exact: true }).click();
   await page.waitForFunction(() => !window.whittle.useApp.getState().dirty);
@@ -172,6 +193,8 @@ try {
   await page.getByRole("button", { name: "Open CAM", exact: true }).click();
   await page.waitForFunction(() => window.whittle.useApp.getState().fileName === "manufacturing-regression.cam");
   await awaitTool(2);
+  await checkVisibility(beforeIsolation);
+  assert.equal(await restore.count(), 0);
   assert.equal((await toolModel()).id, tool.id);
   assert.equal(await page.evaluate((id) => window.whittle.useApp.getState().doc.bodies[id].visible, holderId), false);
   assert.equal(await page.evaluate((id) => window.whittle.useApp.getState().regen.planes.find((frame) => frame.id === id)?.origin[0], tool.tipCsysId), 30);

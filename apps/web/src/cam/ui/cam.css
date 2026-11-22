@@ -154,3 +154,8 @@
 .cam-tool__placement {
   margin-block: 0.5rem;
 }
+
+.cam-isolation-banner {
+  top: auto;
+  bottom: 64px;
+}

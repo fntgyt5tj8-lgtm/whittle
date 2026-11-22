@@ -1,4 +1,21 @@
-import { CAM_TOOL_COMPONENT_ROLES, type CamProject, type CamToolComponentRole } from "./model";
+import { CAM_TOOL_COMPONENT_ROLES, type CamProcess, type CamProject, type CamToolComponentRole, type CamToolPosition } from "./model";
+
+export function validateOperationTooling(process: CamProcess, tools: readonly CamToolPosition[] = []): string[] {
+  const errors: string[] = [];
+  if (process.toolPositionId !== undefined && !tools.some((tool) => tool.id === process.toolPositionId)) {
+    errors.push(`${process.name} references a missing tool position (${process.toolPositionId}).`);
+  }
+  for (const [label, value] of [
+    ["cut feed", process.profile?.feed],
+    ["plunge feed", process.profile?.plungeFeed],
+    ["spindle speed", process.profile?.spindleRpm],
+  ]) {
+    if (value !== undefined && value.trim() && (!Number.isFinite(Number(value)) || Number(value) <= 0)) {
+      errors.push(`${process.name} needs a positive ${label}.`);
+    }
+  }
+  return errors;
+}
 
 export function validateProject(project: CamProject): string[] {
   const errors: string[] = [];
@@ -36,6 +53,7 @@ export function validateProject(project: CamProject): string[] {
     if (!process.id.trim() || processIds.has(process.id)) errors.push("Process IDs must be present and unique.");
     processIds.add(process.id);
     if (!process.name.trim()) errors.push("Enter a name for each process.");
+    errors.push(...validateOperationTooling(process, project.toolPositions));
     const setup = project.setups.find((item) => item.id === process.setupId);
     if (!setup) errors.push("Each process needs an existing setup.");
     if (setup?.contexts && !setup.contexts.some((item) => item.id === process.contextId)) {
@@ -81,7 +99,7 @@ export function isCamProject(value: unknown): value is CamProject {
       || (typeof item.csys === "string" && item.csys.startsWith("datum:") && item.csys.length > 6))
     && (item.side === undefined || item.side === "inside" || item.side === "outside")
     && (item.direction === undefined || item.direction === "cw" || item.direction === "ccw")
-    && ["diameter", "depth", "clearance", "feed", "plungeFeed"].every((key) =>
+    && ["diameter", "depth", "clearance", "feed", "plungeFeed", "spindleRpm"].every((key) =>
       item[key] === undefined || typeof item[key] === "string");
 
   const expressionTriple = (item: unknown) => Array.isArray(item) && item.length === 3
@@ -116,6 +134,7 @@ export function isCamProject(value: unknown): value is CamProject {
     && Array.isArray(value.processes) && value.processes.every((item) => record(item)
       && typeof item.id === "string" && typeof item.name === "string" && typeof item.setupId === "string"
       && (item.contextId === undefined || typeof item.contextId === "string")
+      && (item.toolPositionId === undefined || (typeof item.toolPositionId === "string" && !!item.toolPositionId.trim()))
       && item.kind === "profile" && (item.contour === undefined || geometry(item.contour))
       && (item.profile === undefined || profile(item.profile))
       && (item.track === undefined || (record(item.track)

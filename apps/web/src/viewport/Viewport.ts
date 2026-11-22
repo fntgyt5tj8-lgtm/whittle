@@ -170,7 +170,7 @@ export class Viewport {
   private persp = new THREE.PerspectiveCamera(32, 1, 0.1, 100000);
   private orthoCam = new THREE.OrthographicCamera(-1, 1, 1, -1, -1000, 100000);
   private view: ViewSettings = { display: "edges", section: null, analysis: null, grid: true, ortho: false };
-  private lastBodies: { list: BodyResult[]; meta: Record<Id, BodyMeta> } = { list: [], meta: {} };
+  private lastBodies: { list: BodyResult[]; meta: Record<Id, BodyMeta>; isolated?: ReadonlySet<Id> } = { list: [], meta: {} };
   private measureGroup = new THREE.Group();
   private flagGroup = new THREE.Group();
   private fillGroup = new THREE.Group();
@@ -900,14 +900,14 @@ export class Viewport {
     }
   }
 
-  setBodies(list: BodyResult[], meta: Record<Id, BodyMeta>) {
-    this.lastBodies = { list, meta };
+  setBodies(list: BodyResult[], meta: Record<Id, BodyMeta>, isolated?: ReadonlySet<Id>) {
+    this.lastBodies = { list, meta, isolated };
     for (const v of this.bodies.values()) this.dropView(v, this.world);
     this.bodies.clear();
     for (const b of list) {
       const m = meta[b.id];
       const v = this.makeBodyView(b, m?.color ?? "#b7bfc9", false, m?.look, m?.opacity);
-      v.visible = m?.visible !== false;
+      v.visible = isolated ? isolated.has(b.id) : m?.visible !== false;
       if (!v.visible) v.mesh.visible = v.edges.visible = false;
       this.bodies.set(b.id, v);
       this.world.add(v.mesh, v.edges);
@@ -975,7 +975,7 @@ export class Viewport {
     }
     const rebuild =
       prev.display !== v.display || !!prev.section !== !!v.section || prev.analysis !== v.analysis;
-    if (rebuild) this.setBodies(this.lastBodies.list, this.lastBodies.meta);
+    if (rebuild) this.setBodies(this.lastBodies.list, this.lastBodies.meta, this.lastBodies.isolated);
     else if ((prev.explode ?? 0) !== (v.explode ?? 0)) this.applyExplode();
     this.grid.visible = v.grid;
     this.syncAxisZ();
@@ -1113,6 +1113,7 @@ export class Viewport {
     for (const { pick, style } of items) {
       const color = style === "hover" ? this.theme.hover : this.theme.select;
       if (pick.kind === "face" || pick.kind === "edge" || pick.kind === "body") {
+        if (this.lastBodies.isolated && !this.lastBodies.isolated.has(pick.bodyId)) continue;
         const v = this.findBody(pick.bodyId, this.pickBodies.length > 0);
         if (!v) continue;
         if (pick.kind === "face") {
@@ -1374,7 +1375,7 @@ export class Viewport {
     this.setGridFrame(frame);
     if (!frame) {
       // Restore each body's own finish.
-      if (was) this.setBodies(this.lastBodies.list, this.lastBodies.meta);
+      if (was) this.setBodies(this.lastBodies.list, this.lastBodies.meta, this.lastBodies.isolated);
       this.invalidate();
       return;
     }

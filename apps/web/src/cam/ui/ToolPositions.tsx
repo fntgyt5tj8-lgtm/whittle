@@ -139,10 +139,15 @@ function PositionProperties({ tool }: { tool: CamToolPosition }) {
   const selectedBody = useApp((s) => s.selection.find((pick) =>
     pick.kind === "body" || pick.kind === "face" || pick.kind === "edge")?.bodyId);
   const [role, setRole] = useState<CamToolComponentRole>("cutter");
+  const isolated = useApp((s) => s.isolatedToolId === tool.id);
+  const hasGeometry = useApp((s) => s.builtDoc === s.doc
+    && s.regen?.bodies.some((body) => tool.components.some(({ bodyId }) => bodyId === body.id)));
   const active = doc.features.slice(0, activeEnd(doc)).some((f) => f.id === tool.tipCsysId);
   return (
     <>
       <h2>{toolLabel(tool)}</h2>
+      <button type="button" className="btn btn--small" disabled={!hasGeometry || isolated}
+        onClick={() => useApp.setState({ isolatedToolId: tool.id, selection: [], hover: null })}>Isolate Tool</button>
       <div className="cam-tool__fields">
         <label>Tool number <DeferredInput className="input input--small" type="number" min="1" step="1" value={String(tool.number)}
           onCommit={(value) => {

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import {
-  CAM_WORLD, addProcess, addSetup, getProcessPlan, validateProject,
+  CAM_WORLD, addProcess, addSetup, getProcessPlan, validateOperationTooling, validateProject,
   type CamMachiningStage, type CamPlanItem, type CamProject, type CamSetup, type CircularProfileSettings,
 } from "@whittle/cam";
 import type { CamCadAdapter } from "../cadAdapter";
@@ -70,6 +70,8 @@ export function useCamWorkspace(
     setSelectedKey();
   }
 
+  const tools = project.toolPositions ?? [];
+  const operationTool = tools.find((tool) => tool.id === process?.toolPositionId);
   const assignedTrack = process?.track;
   const track = assignedTrack && demoTracks.find((item) => trackKey(item) === trackKey(assignedTrack));
   const unit = track && demoMachine.executionUnits.find((item) => item.id === track.unitId);
@@ -154,8 +156,12 @@ export function useCamWorkspace(
   for (const item of project.processes) {
     if (item.contour && !cad.resolveGeometry(item.contour)) errors.push(`${item.name} references a missing profile sketch.`);
   }
-  const operationErrors = () => (context?.bodies ?? []).flatMap(({ body, role }) =>
-    cad.resolveGeometry(body) ? [] : [`The ${role} body (${body.entityId}) is unavailable.`]);
+  const operationErrors = () => [
+    ...(process ? validateOperationTooling(process, tools) : []),
+    ...(operationTool && !operationTool.cutting ? ["Define the selected tool's cutting diameter before exporting."] : []),
+    ...(context?.bodies ?? []).flatMap(({ body, role }) =>
+      cad.resolveGeometry(body) ? [] : [`The ${role} body (${body.entityId}) is unavailable.`]),
+  ];
   for (const item of project.setups.flatMap((item) => item.contexts ?? [])) {
     if (item.frame.kind === "native" && item.frame.csysId) {
       const csysId = item.frame.csysId;
@@ -186,6 +192,18 @@ export function useCamWorkspace(
             {!context && <option value="" disabled>Workpiece context unavailable</option>}
             {contexts.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
           </select></dd>
+          <dt><label htmlFor="cam-operation-tool">Tool position</label></dt>
+          <dd><select id="cam-operation-tool" value={process.toolPositionId ?? ""} onChange={(event) => {
+            const toolPositionId = event.target.value || undefined;
+            setProject((current) => ({
+              ...current, processes: current.processes.map((item) => item.id === process.id ? { ...item, toolPositionId } : item),
+            }), "Assign operation tool position");
+          }}>
+            <option value="">Unassigned</option>
+            {process.toolPositionId && !operationTool && <option value={process.toolPositionId}>Tool position unavailable</option>}
+            {[...tools].sort((a, b) => a.number - b.number).map((tool) =>
+              <option key={tool.id} value={tool.id}>T{String(tool.number).padStart(2, "0")} — {tool.name}</option>)}
+          </select></dd>
           <dt><label htmlFor="cam-machining-stage">Machining stage</label></dt>
           <dd><select id="cam-machining-stage" value={selectedItem.stage}
             onChange={(event) => changeMachiningStage(event.target.value as CamMachiningStage)}>
@@ -211,8 +229,9 @@ export function useCamWorkspace(
         </>}
       </dl>
       {process && !process.contour && <p>Select a sketch with one circle before adding a profile to export APT-CL.</p>}
-      {process?.contour && <ProfileExport key={`${documentId}/${process.id}`}
+      {process && <ProfileExport key={`${documentId}/${process.id}/${process.toolPositionId ?? ""}/${operationTool?.cutting?.diameter ?? ""}`}
         name={process.id} settings={process.profile} onChange={changeProfile} resolveFrame={resolveFrame} validateReferences={operationErrors}
+        hasContour={!!process.contour} hasTool={process.toolPositionId !== undefined} toolDiameter={operationTool?.cutting?.diameter}
         resolve={() => process.contour && cad.resolveCircularProfile?.(process.contour)} />}
       {setup && !selectedItem && <SetupEditor key={`${documentId}/${setup.id}`}
         setup={setup} cad={cad} edit={editSetup} select={selectContext} removeContext={removeContext}

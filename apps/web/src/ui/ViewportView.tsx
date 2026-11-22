@@ -541,6 +541,8 @@ export function ViewportView() {
 
   const doc = useApp((s) => s.doc);
   const regen = useApp((s) => s.regen);
+  const isolatedToolId = useApp((s) => s.isolatedToolId);
+  const isolatedTool = doc.manufacturing?.toolPositions?.find((tool) => tool.id === isolatedToolId);
   const mode = useApp((s) => s.mode);
   const session = useApp((s) => s.session);
   const selection = useApp((s) => s.selection);
@@ -734,8 +736,14 @@ export function ViewportView() {
   // Bodies.
   useEffect(() => {
     if (!vp || !regen) return;
-    vp.setBodies(regen.bodies, doc.bodies);
-  }, [vp, regen, doc.bodies]);
+    const isolated = isolatedTool?.components.length
+      ? new Set(isolatedTool.components.map(({ bodyId }) => bodyId)) : undefined;
+    vp.setBodies(regen.bodies, doc.bodies, isolated);
+  }, [vp, regen, doc.bodies, isolatedTool?.components]);
+
+  useEffect(() => {
+    if (isolatedToolId && !isolatedTool?.components.length) useApp.setState({ isolatedToolId: null });
+  }, [isolatedToolId, isolatedTool?.components.length]);
 
   // A new extrude or revolve started while looking straight at its sketch turns the view so the solid can be seen forming.
   const newSession = session?.isNew ? session.featureId : null;
@@ -752,9 +760,12 @@ export function ViewportView() {
     return t === "fillet" || t === "chamfer";
   });
   useEffect(() => {
-    vp?.setPickBodies(regen?.pickBodies, !edgeEdit);
+    const pickBodies = isolatedTool?.components.length
+      ? regen?.pickBodies?.filter((body) => isolatedTool.components.some(({ bodyId }) => bodyId === body.id))
+      : regen?.pickBodies;
+    vp?.setPickBodies(pickBodies, !edgeEdit);
     vp?.setGhost(session ? regen?.ghost : undefined, regen?.ghostOp);
-  }, [vp, regen, session, edgeEdit]);
+  }, [vp, regen, session, edgeEdit, isolatedTool?.components]);
 
   // Initial framing once the first model arrives; re-frame after inserting parts.
   const framed = useRef(false);
@@ -1101,7 +1112,7 @@ export function ViewportView() {
     // Hovering something already chosen keeps its selected color rather than masking it with the hover tint.
     if (hover && hover.kind !== "sketch" && mode.kind !== "sketch" && !items.some((i) => samePick(i.pick, hover))) items.push({ pick: hover, style: "hover" });
     vp.setHighlights(items);
-  }, [vp, regen, selection, hover, sessionFeature, mode.kind, picks, datumVisibility, theme]);
+  }, [vp, regen, selection, hover, sessionFeature, mode.kind, picks, datumVisibility, theme, isolatedTool?.components]);
 
   // Keyboard routing for sketch tools and typed dimensions.
   useEffect(() => {
@@ -1195,6 +1206,11 @@ export function ViewportView() {
   return (
     <section className={`viewport ${mode.kind === "sketch" ? "is-sketching" : ""} ${mode.kind === "pickPlane" || mode.kind === "measure" ? "is-picking" : ""}`} aria-label="3D view" role="main">
       <div ref={host} className="viewport__host" />
+      {isolatedTool?.components.length ? <div className="viewport__banner cam-isolation-banner">
+        <span>Tool isolated</span>
+        <button type="button" className="btn btn--small"
+          onClick={() => useApp.setState({ isolatedToolId: null })}>Restore Visibility</button>
+      </div> : null}
 
       {!kernelReady && (
         <div className="viewport__loading">

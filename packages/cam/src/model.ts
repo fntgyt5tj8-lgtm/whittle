@@ -50,6 +50,7 @@ export interface CircularProfileSettings {
   readonly clearance?: string;
   readonly feed?: string;
   readonly plungeFeed?: string;
+  readonly spindleRpm?: string;
 }
 
 export interface CamProcess {
@@ -57,6 +58,7 @@ export interface CamProcess {
   readonly name: string;
   readonly setupId: string;
   readonly kind: "profile";
+  readonly toolPositionId?: string;
   readonly contour?: CamGeometryRef;
   readonly contextId?: string;
   readonly profile?: CircularProfileSettings & { readonly csys?: "world" | "sketch" | `datum:${string}` };
