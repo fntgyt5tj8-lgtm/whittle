@@ -113,3 +113,44 @@
 .cam-setup__footer {
   margin-top: 0.5rem;
 }
+
+.cam-browser-tabs {
+  display: flex;
+  gap: 0.25rem;
+  padding: 0.25rem 0.5rem;
+}
+.cam-browser-tabs [aria-pressed="true"] {
+  color: var(--accent);
+}
+.cam-tool__expand {
+  display: grid;
+  place-items: center;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  padding: 0 0.25rem;
+  cursor: pointer;
+}
+.cam-tool__children {
+  margin-inline-start: 1rem;
+}
+.cam-tool__fields,
+.cam-tool__axes,
+.cam-tool__actions {
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+  margin-block: 0.35rem;
+}
+.cam-tool__fields label,
+.cam-tool__axes label {
+  flex: 1 1 3rem;
+  min-width: 0;
+}
+.cam-tool__fields input,
+.cam-tool__axes input {
+  width: 100%;
+}
+.cam-tool__placement {
+  margin-block: 0.5rem;
+}

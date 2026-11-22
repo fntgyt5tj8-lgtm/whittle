@@ -29,6 +29,9 @@ import {
   newDocument,
   nextBodyColor,
   nextBodyName,
+  removeCamToolGeometry,
+  toolForBody,
+  toolForTip,
 } from "@whittle/core";
 import type { RegenResult } from "@whittle/kernel";
 import { type Platform, ask } from "./platform";
@@ -111,6 +114,12 @@ export interface Toast {
 /** The concrete theme on screen (preferences may say "system"). */
 export type Theme = ThemeId;
 
+type CamToolSelection =
+  | { kind: "list" }
+  | { kind: "position"; toolId: Id }
+  | { kind: "component"; toolId: Id; bodyId: Id }
+  | { kind: "tip"; toolId: Id; tipId: Id };
+
 export interface AppState {
   doc: WhittleDocument;
   documentKind: "cad" | "cam";
@@ -130,6 +139,8 @@ export interface AppState {
   mode: Mode;
   session: Session | null;
   selection: Pick[];
+  camBrowserTab: "browser" | "tools";
+  camToolSelection: CamToolSelection | null;
   hover: Pick | null;
   /** Edges the pointer rests on while a fillet or chamfer is open: the model previews them as if picked. */
   hoverEdges: EdgeRef[] | null;
@@ -195,6 +206,8 @@ export const useApp = create<AppState>(() => ({
   mode: { kind: "model" },
   session: null,
   selection: [],
+  camBrowserTab: "browser",
+  camToolSelection: null,
   hover: null,
   hoverEdges: null,
   selectedEntity: null,
@@ -297,6 +310,8 @@ export function replaceDocument(doc: WhittleDocument, fileName: string | null, d
     // A file from an older version may lack metadata for some bodies (so they couldn't be hidden or renamed).
     doc: produce(doc, syncBodies),
     documentKind,
+    camBrowserTab: "browser",
+    camToolSelection: null,
     ribbonTab: documentKind === "cam" ? "manufacturing" : "solid",
     fileName,
     dirty: false,
@@ -354,20 +369,21 @@ export function findFeature<T extends Feature["type"]>(doc: WhittleDocument, id:
 }
 
 /** Insert a new feature (at the rollback marker, if any) and open its editor. */
-export function beginNewFeature(feature: Feature, label: string) {
+export function beginNewFeature(feature: Feature, label: string, beforeId?: Id) {
   const { session, doc } = get();
   if (session) commitSession();
   const base = get().doc;
   set({ session: { featureId: feature.id, isNew: true, base, label, stack: [] }, selection: [], hover: null, toasts: get().toasts.filter((t) => !t.nextStep) });
-  insertFeature(feature);
+  insertFeature(feature, beforeId);
   const s = get().session;
   if (s) set({ session: { ...s, stack: [] } });
   void doc;
 }
 
-function insertFeature(feature: Feature) {
+function insertFeature(feature: Feature, beforeId?: Id) {
   mutate("Insert", (d) => {
-    const at = d.rollback === null ? d.features.length : d.rollback;
+    const before = beforeId ? d.features.findIndex((item) => item.id === beforeId) : -1;
+    const at = before >= 0 ? Math.min(before, activeEnd(d)) : activeEnd(d);
     d.features.splice(at, 0, feature as Draft<Feature>);
     if (d.rollback !== null) d.rollback++;
   });
@@ -488,6 +504,16 @@ export function deleteFeature(id: Id) {
   if (session) commitSession();
   const f = findFeature(get().doc, id);
   if (!f) return;
+  if (toolForTip(get().doc, id)) return toast("info", "Remove the tool position to remove its TIP.");
+  const tool = toolForBody(get().doc, id);
+  if (tool) {
+    mutate(`Remove ${f.name} from tool`, (d) => {
+      removeCamToolGeometry(d, tool, id);
+      const position = d.manufacturing?.toolPositions?.find((item) => item.id === tool.id);
+      if (position) position.components = position.components.filter((item) => item.bodyId !== id);
+    });
+    return set({ selection: [] });
+  }
   // Deleting the sketch being edited leaves sketch mode, or the editor would point at nothing.
   const { mode } = get();
   if (mode.kind === "sketch" && mode.sketchId === id) set({ mode: { kind: "model" }, selectedEntity: null, sketchSel: [], pendingConstraint: null });
@@ -522,6 +548,9 @@ export function moveFeature(from: number, to: number) {
   if (problem) return toast("warn", problem);
   const f = doc.features[from];
   if (!f || from === to) return;
+  if (toolForTip(doc, f.id) || toolForBody(doc, f.id) || (f.type === "move" && toolForBody(doc, f.bodyId))) {
+    return toast("info", "Use the tool position to move TIP or its components.");
+  }
   mutate(`Move ${f.name}`, (d) => {
     const [x] = d.features.splice(from, 1);
     d.features.splice(to, 0, x!);

@@ -1,3 +1,4 @@
+import { validCamToolGeometry } from "./camTools";
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate";
 import { migrateWorkpieceContexts } from "../../cam/src/operations";
 import { isCamProject } from "../../cam/src/validation";
@@ -16,6 +17,7 @@ const MAX_GEOMETRY_BYTES = 512 * 1024 * 1024;
 export function serializeCamDocument(doc: WhittleDocument): Uint8Array {
   const { manufacturing, ...geometry } = doc;
   if (!manufacturing || !isCamProject(manufacturing)) throw new FileFormatError("The CAM project is missing or invalid.");
+  if (!validCamToolGeometry(doc)) throw new FileFormatError("A tool position has damaged component or TIP ownership.");
   const projectBytes = strToU8(JSON.stringify(manufacturing));
   const geometryBytes = serializeDocument(geometry);
   if (projectBytes.length > MAX_PROJECT_BYTES || geometryBytes.length > MAX_GEOMETRY_BYTES) {
@@ -44,7 +46,9 @@ export function deserializeCamDocument(bytes: Uint8Array): WhittleDocument {
     if (!isCamProject(project)) throw new FileFormatError("The CAM project is damaged or uses an unsupported version.");
     const geometry = deserializeDocument(files["geometry.whittle"]!);
     if (geometry.manufacturing) throw new FileFormatError("The CAM geometry contains embedded manufacturing data.");
-    return { ...geometry, manufacturing: migrateWorkpieceContexts(project) };
+    const doc = { ...geometry, manufacturing: migrateWorkpieceContexts(project) };
+    if (!validCamToolGeometry(doc)) throw new FileFormatError("A tool position has damaged component or TIP ownership.");
+    return doc;
   } catch (e) {
     if (e instanceof FileFormatError) throw e;
     throw new FileFormatError("This CAM document is damaged or incomplete.");

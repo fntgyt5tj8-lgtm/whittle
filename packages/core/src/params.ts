@@ -161,12 +161,15 @@ function eachExpr(features: unknown, fn: (expr: string, set: (v: string) => void
  * Rename a parameter and every reference to it (other parameters and all
  * feature fields), so renaming never breaks the design. Mutates `doc`.
  */
-export function renameParameter(doc: Pick<WhittleDocument, "parameters" | "features"> & { variants?: WhittleDocument["variants"] }, from: string, to: string): void {
+export function renameParameter(doc: Pick<WhittleDocument, "parameters" | "features"> & Partial<Pick<WhittleDocument, "variants" | "manufacturing">>, from: string, to: string): void {
   for (const p of doc.parameters) {
     if (p.name === from) p.name = to;
     p.expr = renameIn(p.expr, from, to);
   }
   eachExpr(doc.features, (v, set) => set(renameIn(v, from, to)));
+  for (const tool of doc.manufacturing?.toolPositions ?? []) {
+    eachExpr(tool.placement, (v, set) => set(renameIn(v, from, to)));
+  }
   // Variants hold values by parameter name, and their formulas can use other parameters (audit C-4).
   for (const v of doc.variants ?? []) {
     const next: Record<string, string> = {};
@@ -176,11 +179,12 @@ export function renameParameter(doc: Pick<WhittleDocument, "parameters" | "featu
 }
 
 /** How many features and other parameters use parameter `name` in a formula (field names and words don't count). */
-export function parameterUses(doc: Pick<WhittleDocument, "parameters" | "features">, name: string): number {
+export function parameterUses(doc: Pick<WhittleDocument, "parameters" | "features"> & Partial<Pick<WhittleDocument, "manufacturing">>, name: string): number {
   let n = 0;
-  for (const f of doc.features) {
+  const toolPlacements = doc.manufacturing?.toolPositions?.map((tool) => tool.placement) ?? [];
+  for (const item of [...doc.features, ...toolPlacements]) {
     let hit = false;
-    eachExpr(f, (v) => (hit ||= referencedNames(v).includes(name)));
+    eachExpr(item, (v) => (hit ||= referencedNames(v).includes(name)));
     if (hit) n++;
   }
   return n + doc.parameters.filter((p) => p.name !== name && referencedNames(p.expr).includes(name)).length;

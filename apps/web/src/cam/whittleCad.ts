@@ -1,11 +1,12 @@
-import { documentEvaluator } from "@whittle/core";
+import { documentEvaluator, toolForBody, toolForTip } from "@whittle/core";
 import type { CamGeometryRef } from "@whittle/cam";
 import type { CamCadAdapter } from "./cadAdapter";
 import { findFeature, useApp } from "../state/store";
 
 export const whittleCad: CamCadAdapter = {
   getCoordinateSystems() {
-    return useApp.getState().doc.features.filter((feature) => feature.type === "csys");
+    const { doc } = useApp.getState();
+    return doc.features.filter((feature) => feature.type === "csys" && !toolForTip(doc, feature.id));
   },
 
   resolveCoordinateSystem(id) {
@@ -22,7 +23,7 @@ export const whittleCad: CamCadAdapter = {
     if (!documentId) return [];
 
     return selection.flatMap<CamGeometryRef>((pick) => {
-      if (pick.kind === "body") return [{ documentId, kind: "body", entityId: pick.bodyId }];
+      if (pick.kind === "body" && !toolForBody(doc, pick.bodyId)) return [{ documentId, kind: "body", entityId: pick.bodyId }];
       if (pick.kind === "sketch") return [{ documentId, kind: "sketch", entityId: pick.sketchId }];
       return [];
     });

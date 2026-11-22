@@ -1,7 +1,7 @@
 /** Property editors for each feature type (shown in the right-hand panel). */
 import type { Draft } from "immer";
 import { useEffect, useRef, useState } from "react";
-import { CONSTRUCT_MODES, CURVE_SOURCES, LENGTH_TO_MM, SURFACE_OPS, constructRefs, datumKind, defaultLength, documentEvaluator, sketchCountText } from "@whittle/core";
+import { CONSTRUCT_MODES, CURVE_SOURCES, LENGTH_TO_MM, SURFACE_OPS, constructRefs, datumKind, defaultLength, documentEvaluator, sketchCountText, toolForBody, toolForTip } from "@whittle/core";
 import { volumeText } from "../state/measure";
 import type {
   BodyOp,
@@ -703,12 +703,14 @@ function LoftEditor({ f }: { f: LoftFeature }) {
 
 function MoveEditor({ f }: { f: MoveFeature }) {
   const isCam = useApp((s) => s.documentKind === "cam");
-  const features = useApp((s) => s.doc.features);
+  const doc = useApp((s) => s.doc);
+  const features = doc.features;
+  const toolMove = !!(toolForBody(doc, f.id) || toolForBody(doc, f.bodyId));
   const earlierDatums = features.slice(0, features.findIndex(({ id }) => id === f.id))
-    .filter((feature) => feature.type === "csys" && !feature.suppressed);
+    .filter((feature) => feature.type === "csys" && !feature.suppressed && !toolForTip(doc, feature.id));
   return (
     <>
-      <BodySelect value={f.bodyId} allowAuto="Latest body" exclude={f.id} onChange={(v) => upd(f, "Body", (d) => void (d.bodyId = v))} />
+      {toolMove ? <div>{doc.bodies[f.bodyId ?? ""]?.name}</div> : <BodySelect value={f.bodyId} allowAuto="Latest body" exclude={f.id} onChange={(v) => { if (!toolForBody(doc, v)) upd(f, "Body", (d) => void (d.bodyId = v)); }} />}
       {(isCam || f.placement) && <Toggle label="Place between coordinate systems" checked={!!f.placement}
         onChange={(checked) => upd(f, "Placement mode", (d) => void (d.placement = checked ? {} : undefined))} />}
       {f.placement ? (["from", "to"] as const).map((end) => (
@@ -738,7 +740,7 @@ function MoveEditor({ f }: { f: MoveFeature }) {
         />
         <ExprInput label="Angle" kind="angle" value={f.angle} hint="Turns about the body's own center" onChange={(v) => upd(f, "Angle", (d) => void (d.angle = v))} />
       </>}
-      <Toggle label="Keep the original (make a copy)" checked={f.copy} onChange={(v) => upd(f, "Copy", (d) => void (d.copy = v))} />
+      {!toolMove && <Toggle label="Keep the original (make a copy)" checked={f.copy} onChange={(v) => upd(f, "Copy", (d) => void (d.copy = v))} />}
     </>
   );
 }
@@ -1077,7 +1079,9 @@ const CSYS_FIELDS: { input: CsysInput; label: string; hint: string }[] = [
 ];
 
 function CsysEditor({ f }: { f: CsysFeature }) {
-  const features = useApp((s) => s.doc.features);
+  const doc = useApp((s) => s.doc);
+  const features = doc.features;
+  const isTip = !!toolForTip(doc, f.id);
   const picking = useApp((s) => s.session?.csysInput);
   function chooseInput(input?: CsysInput) {
     const { session } = useApp.getState();
@@ -1103,7 +1107,7 @@ function CsysEditor({ f }: { f: CsysFeature }) {
               })}
             </div>
           ))}
-          <p className="field__note">The origin uses world coordinates. Rotations follow the right-hand rule about fixed world X, then Y, then Z.</p>
+          <p className="field__note">The origin uses {isTip ? "tool-local" : "world"} coordinates. Rotations follow the right-hand rule about fixed X, then Y, then Z.</p>
         </>
       ) : (
         <>

@@ -1,10 +1,11 @@
 /** Left panel: what's in the design (parameters, origin, bodies, sketches). */
 import { useState } from "react";
-import { type DatumKind, activeEnd, datumKind, documentEvaluator, featureInputs, formatQuantity, isSketchConsumed } from "@whittle/core";
+import { type DatumKind, activeEnd, datumKind, documentEvaluator, featureInputs, formatQuantity, isSketchConsumed, toolForBody, toolForTip } from "@whittle/core";
 import { createSketchOn, handlePick, saveNamedView, showNamedView } from "../state/actions";
-import { editFeature, mutate, useApp } from "../state/store";
+import { editFeature, isNarrow, mutate, useApp } from "../state/store";
 import { renameBody, renameStep } from "../state/steps";
 import { DATUM_ICONS, Icon } from "./icons";
+import { ToolPositions } from "../cam/ui/ToolPositions";
 import { DeferredInput } from "./DeferredInput";
 
 function Section({ title, count, children, defaultOpen = true, forceOpen = false, control }: { title: string; count?: number; children: React.ReactNode; defaultOpen?: boolean; forceOpen?: boolean; control?: React.ReactNode }) {
@@ -27,6 +28,9 @@ function Section({ title, count, children, defaultOpen = true, forceOpen = false
 
 export function Browser() {
   const doc = useApp((s) => s.doc);
+  const manufacturingTab = useApp((s) => s.documentKind === "cam" && s.ribbonTab === "manufacturing" && s.mode.kind !== "sketch");
+  const camBrowserTab = useApp((s) => s.camBrowserTab);
+  const showTools = manufacturingTab && camBrowserTab === "tools";
   const [editing, setEditing] = useState<string | null>(null);
   const regen = useApp((s) => s.regen);
   const selection = useApp((s) => s.selection);
@@ -37,7 +41,7 @@ export function Browser() {
   const inputs = choosingDatum ? featureInputs(edited) : [];
   const end = activeEnd(doc);
   const ev = documentEvaluator(doc);
-  const bodies = regen?.bodies ?? [];
+  const bodies = (regen?.bodies ?? []).filter((body) => !toolForBody(doc, body.id));
   const sketches = doc.features.slice(0, end).filter((f) => f.type === "sketch");
   const active = doc.features.slice(0, end);
   const planes = active.filter((f) => datumKind(f) === "plane");
@@ -45,7 +49,7 @@ export function Browser() {
     { kind: "plane", title: "Planes", features: planes },
     { kind: "axis", title: "Axes", features: active.filter((f) => datumKind(f) === "axis") },
     { kind: "point", title: "Points", features: active.filter((f) => datumKind(f) === "point") },
-    { kind: "csys", title: "Coordinate systems", features: active.filter((f) => datumKind(f) === "csys") },
+    { kind: "csys", title: "Coordinate systems", features: active.filter((f) => datumKind(f) === "csys" && !toolForTip(doc, f.id)) },
   ] as const satisfies ReadonlyArray<{ kind: DatumKind; title: string; features: typeof active }>;
   const curves = active.filter((f) => f.type === "curve");
   const isSel = (fn: (p: (typeof selection)[number]) => boolean) => selection.some(fn);
@@ -59,7 +63,21 @@ export function Browser() {
           <Icon name="close" size={15} />
         </button>
       </header>
-      <div className="tree">
+      {manufacturingTab && <div className="cam-browser-tabs" role="group" aria-label="Manufacturing browser">
+        <button className="btn btn--small" type="button" aria-pressed={!showTools}
+          onClick={() => useApp.setState({ camBrowserTab: "browser", camToolSelection: null })}>Browser</button>
+        <button className="btn btn--small" type="button" aria-pressed={showTools} onClick={() => {
+          const { session, camToolSelection, doc } = useApp.getState();
+          const openProperties = !session && (!isNarrow() || !doc.manufacturing?.toolPositions?.length);
+          useApp.setState({
+            camBrowserTab: "tools",
+            camToolSelection: camToolSelection ?? { kind: "list" },
+            ...(openProperties ? { panelOpen: true, ...(isNarrow() ? { browserOpen: false } : {}) } : {}),
+          });
+        }}>Tools</button>
+      </div>}
+      {manufacturingTab && <div className="tree" hidden={!showTools}><ToolPositions /></div>}
+      <div className="tree" hidden={showTools}>
         {/* Opens by itself once a design has parameters (a template, say): the numbers are the point (audit U-4). */}
         <Section key={doc.parameters.length > 0 ? "params" : "no-params"} title="Parameters" count={doc.parameters.length} defaultOpen={doc.parameters.length > 0}>
           {[...doc.parameters].sort((a, b) => Number(!!b.favorite) - Number(!!a.favorite)).map((p) =>

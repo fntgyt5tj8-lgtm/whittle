@@ -75,6 +75,28 @@ export type CamPlanItem =
   | { readonly kind: "process"; readonly processId: string; readonly stage: CamMachiningStage }
   | CamPlanStage;
 
+export const CAM_TOOL_COMPONENT_ROLES = ["cutter", "insert", "holder", "adapter", "other"] as const;
+export type CamToolComponentRole = typeof CAM_TOOL_COMPONENT_ROLES[number];
+
+export interface CamToolComponent {
+  readonly bodyId: string;
+  readonly role: CamToolComponentRole;
+}
+
+export interface CamToolPosition {
+  readonly id: string;
+  readonly number: number;
+  readonly name: string;
+  readonly components: readonly CamToolComponent[];
+  readonly tipCsysId: string;
+  /** Internal tool-to-document transform. Expressions use the CAM document's units. */
+  readonly placement: {
+    readonly position: readonly [string, string, string];
+    readonly rotation: readonly [string, string, string];
+  };
+  readonly cutting?: FlatEndmill;
+}
+
 export interface CamProject {
   readonly schemaVersion: 1;
   readonly name: string;
@@ -82,7 +104,8 @@ export interface CamProject {
   readonly processes: readonly CamProcess[];
   /** Part history in planning order. Execution dependencies are independent of this order. */
   readonly processPlan?: readonly CamPlanItem[];
-  /** Reserved for CAM-owned tool definitions and assignments. */
+  readonly toolPositions?: readonly CamToolPosition[];
+  /** Reserved metadata from earlier CAM documents. */
   readonly tooling?: Readonly<Record<string, unknown>>;
 }
 

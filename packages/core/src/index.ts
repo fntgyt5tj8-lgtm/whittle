@@ -16,3 +16,4 @@ export * from "./inertia";
 export * from "./rules";
 export * from "./designUnits";
 export * from "./camFile";
+export * from "./camTools";

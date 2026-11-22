@@ -7,6 +7,7 @@ import { commandById } from "../state/commands";
 import { Toolbar, ToolButton } from "../ui/Chrome";
 import { PropertiesPanel } from "../ui/PropertiesPanel";
 import { Timeline } from "../ui/Timeline";
+import { ToolProperties } from "./ui/ToolPositions";
 import { whittleCad } from "./whittleCad";
 
 const emptyProject = createProject("Manufacturing project");
@@ -18,7 +19,9 @@ export function ManufacturingSlots({ enabled, children }: { enabled: boolean; ch
   const regen = useApp((s) => s.builtDoc === s.doc ? s.regen : null);
   const isCam = useApp((s) => s.documentKind === "cam");
   const active = useApp((s) => s.ribbonTab === "manufacturing") && enabled && isCam;
-  const openProperties = () => useApp.setState({ panelOpen: true, ...(isNarrow() ? { browserOpen: false } : {}) });
+  const toolSelection = useApp((s) => s.camToolSelection);
+  const editing = useApp((s) => !!s.session);
+  const openProperties = () => useApp.setState({ camToolSelection: null, panelOpen: true, ...(isNarrow() ? { browserOpen: false } : {}) });
   function saveProject(update: (current: CamProject) => CamProject, label: string, mergeKey?: string) {
     const state = useApp.getState();
     if (state.documentKind !== "cam") return;
@@ -73,7 +76,7 @@ export function ManufacturingSlots({ enabled, children }: { enabled: boolean; ch
     <>
       <Toolbar manufacturing={ribbon} />
       {children}
-      <PropertiesPanel content={active ? cam.properties : undefined} />
+      <PropertiesPanel content={active && !editing ? (toolSelection ? <ToolProperties /> : cam.properties) : undefined} />
       <Timeline content={active ? cam.timeline : undefined} />
     </>
   );

@@ -1,4 +1,4 @@
-import type { CamProject } from "./model";
+import { CAM_TOOL_COMPONENT_ROLES, type CamProject, type CamToolComponentRole } from "./model";
 
 export function validateProject(project: CamProject): string[] {
   const errors: string[] = [];
@@ -84,7 +84,30 @@ export function isCamProject(value: unknown): value is CamProject {
     && ["diameter", "depth", "clearance", "feed", "plungeFeed"].every((key) =>
       item[key] === undefined || typeof item[key] === "string");
 
+  const expressionTriple = (item: unknown) => Array.isArray(item) && item.length === 3
+    && item.every((expr) => typeof expr === "string");
+  const ids = new Set<string>();
+  const numbers = new Set<number>();
+  const owned = new Set<string>();
+  const uniqueId = (id: unknown, set: Set<string>): id is string => {
+    if (typeof id !== "string" || !id.trim() || set.has(id)) return false;
+    set.add(id);
+    return true;
+  };
+  const toolPosition = (item: unknown) => {
+    if (!record(item) || !uniqueId(item.id, ids) || typeof item.number !== "number"
+      || !Number.isSafeInteger(item.number) || item.number < 1 || numbers.has(item.number)) return false;
+    numbers.add(item.number);
+    return typeof item.name === "string" && !!item.name.trim() && uniqueId(item.tipCsysId, owned)
+      && record(item.placement) && expressionTriple(item.placement.position) && expressionTriple(item.placement.rotation)
+      && Array.isArray(item.components) && item.components.every((component) => record(component)
+        && uniqueId(component.bodyId, owned) && CAM_TOOL_COMPONENT_ROLES.includes(component.role as CamToolComponentRole))
+      && (item.cutting === undefined || (record(item.cutting) && item.cutting.kind === "flat-endmill"
+        && typeof item.cutting.diameter === "number" && Number.isFinite(item.cutting.diameter) && item.cutting.diameter > 0));
+  };
+
   return record(value) && value.schemaVersion === 1 && typeof value.name === "string"
+    && (value.toolPositions === undefined || (Array.isArray(value.toolPositions) && value.toolPositions.every(toolPosition)))
     && (value.tooling === undefined || record(value.tooling))
     && Array.isArray(value.setups) && value.setups.every((item) => record(item)
       && typeof item.id === "string" && typeof item.name === "string"

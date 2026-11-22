@@ -11,6 +11,9 @@ import {
   type EdgeRef,
   type FaceRef,
   type Feature,
+  type WhittleDocument,
+  toolForBody,
+  toolForTip,
   type Id,
   type OriginPlane,
   type PlaneRef,
@@ -69,6 +72,7 @@ import {
   type NamedView,
   uid,
 } from "@whittle/core";
+import type { CamToolComponentRole } from "@whittle/cam";
 import { tangentChain } from "./edgeChain";
 import { promptDialog } from "./dialogs";
 import { viewportRef } from "../viewport/current";
@@ -328,10 +332,15 @@ export function startLoft() {
   if (ids.length < 2) toast("info", "Loft joins two or more sketches on different planes. Click sketches to add them.");
 }
 
-export function startMove() {
-  const body = selectedBodyId() ?? lastBodyId();
+export function startMove(body = selectedBodyId() ?? lastBodyId()) {
   if (!body) return toast("info", "Create a body first, then move it.");
-  beginNewFeature(makeMove(get().doc, body), "New Move");
+  if (get().session) commitSession();
+  const { doc } = get();
+  const tool = toolForBody(doc, body);
+  if (tool && !doc.features.slice(0, activeEnd(doc)).some((f) => f.id === tool.tipCsysId)) {
+    return toast("warn", "Restore the tool timeline before moving its components.");
+  }
+  beginNewFeature(makeMove(doc, body), "New Move", tool?.tipCsysId);
 }
 
 export function startCombine() {
@@ -343,19 +352,47 @@ export function startCombine() {
 }
 
 /** Pick a STEP, STL or OBJ file and add it as a body. */
-export function importModel() {
+export function importModel(target?: ToolImportTarget) {
   const input = document.createElement("input");
   input.type = "file";
   input.accept = ".step,.stp,.stl,.obj,.whittle";
   input.onchange = () => {
     const file = input.files?.[0];
-    if (file) void importFile(file);
+    if (file) void importFile(file, target);
   };
   input.click();
 }
 
-export async function importFile(file: File) {
+interface ToolImportTarget {
+  id: Id;
+  role: CamToolComponentRole;
+}
+
+export function addToolComponentFeatures(
+  draft: WhittleDocument,
+  target: ToolImportTarget,
+  features: Feature[],
+) {
+  const tool = draft.manufacturing?.toolPositions?.find((item) => item.id === target.id);
+  const at = draft.features.findIndex((item) => item.id === tool?.tipCsysId);
+  if (!tool || at < 0 || at >= activeEnd(draft)) return;
+  const components = features.map((f) => ({ bodyId: f.id, role: target.role }));
+  draft.manufacturing = {
+    ...draft.manufacturing!,
+    toolPositions: draft.manufacturing!.toolPositions!.map((item) => item.id === target.id
+      ? { ...item, components: [...item.components, ...components] } : item),
+  };
+  draft.features.splice(at, 0, ...features);
+  if (draft.rollback !== null) draft.rollback += features.length;
+}
+
+export async function importFile(file: File, target?: ToolImportTarget) {
+  if (target && get().session) commitSession();
   const { doc, documentKind } = get();
+  if (target) {
+    const tool = doc.manufacturing?.toolPositions?.find((item) => item.id === target.id);
+    if (documentKind !== "cam" || !tool || !doc.features.slice(0, activeEnd(doc)).some((f) => f.id === tool.tipCsysId)) return;
+  }
   const ext = file.name.toLowerCase().split(".").pop();
   const format = ext === "stl" ? "stl" : ext === "obj" ? "obj" : ext === "step" || ext === "stp" ? "step" : ext === "whittle" ? "whittle" : null;
   if (!format) return toast("warn", "Only STEP (.step, .stp), STL, OBJ and Whittle (.whittle) files can be inserted.");
@@ -400,16 +437,22 @@ export async function importFile(file: File) {
         draft.bodies[f.id] = { color: sourceDoc.bodies[bodyId]?.color ?? "#afbdcd", name: f.name, visible: true };
         return f;
       });
-      draft.features.splice(at, 0, ...imports);
-      if (draft.rollback !== null) draft.rollback += imports.length;
+      if (target) addToolComponentFeatures(draft, target, imports);
+      else {
+        draft.features.splice(at, 0, ...imports);
+        if (draft.rollback !== null) draft.rollback += imports.length;
+      }
     });
     toast("ok", `Inserted ${bodies.length} CAD ${bodies.length === 1 ? "body" : "bodies"} from ${file.name}`);
     return;
   }
   const f = makeImport(doc, file.name, format, data);
   f.name = file.name.replace(/\.[^.]+$/, "");
-  beginNewFeature(f, `Import ${file.name}`);
-  commitSession();
+  if (target) mutate(`Insert ${file.name} into tool`, (draft) => addToolComponentFeatures(draft, target, [f]));
+  else {
+    beginNewFeature(f, `Import ${file.name}`);
+    commitSession();
+  }
   toast("ok", `Imported ${file.name}`);
 }
 
@@ -832,6 +875,11 @@ export function handlePick(p: Pick | null, additive: boolean) {
   if (f?.type === "csys" && f.mode === "references" && session?.csysInput && p) {
     const input = session.csysInput;
     const refs = { ...f.refs };
+    const tool = toolForTip(doc, f.id);
+    if (tool && p.kind === "edge" && !tool.components.some((item) => item.bodyId === p.bodyId)) {
+      return toast("info", "Pick geometry from a component in this tool position.");
+    }
+    if (tool && p.kind === "datum" && toolForTip(doc, p.id)) return toast("info", "Pick a local reference for TIP.");
     if (p.kind === "datum") {
       const source = findFeature(doc, p.id);
       if (!source || source.suppressed || doc.features.indexOf(source) >= doc.features.indexOf(f)) {
@@ -1160,6 +1208,7 @@ export function handlePick(p: Pick | null, additive: boolean) {
     return;
   }
   if (f && (f.type === "move" || f.type === "mirror" || f.type === "pattern" || f.type === "split" || f.type === "offset" || f.type === "scale") && bodyOf && bodyOf !== f.id) {
+    if (f.type === "move" && (toolForBody(doc, f.bodyId) || toolForBody(doc, f.id) || toolForBody(doc, bodyOf))) return;
     mutate("Pick body", (d) => {
       const x = d.features.find((y) => y.id === f.id);
       if (x && (x.type === "move" || x.type === "mirror" || x.type === "pattern" || x.type === "split" || x.type === "offset" || x.type === "scale")) x.bodyId = bodyOf;

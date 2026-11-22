@@ -8,7 +8,7 @@
  * friendly message (and, where possible, a one-click fix) and later features
  * keep building on the last good state.
  */
-import { CSYS_INPUT_KINDS, type BodyOp, type CsysFeature, type CsysInput, type EdgeRef, type LengthUnit, lengthText, type Evaluator, type FaceRef, type Feature, type HoleFeature, type Id, type SketchFeature, type SketchSolution, type Vec3, type WhittleDocument, activeEnd, cadRevision, createEvaluator, deserializeDocument, validateCadSource, drawnEntities, entityOutline, expandSketch, frameAxes, planeOrigin, sketchGap, polylinePath, resolveEntity, thickenPath } from "@whittle/core";
+import { CSYS_INPUT_KINDS, type BodyOp, type CsysFeature, type CsysInput, type EdgeRef, type LengthUnit, lengthText, type Evaluator, type FaceRef, type Feature, type HoleFeature, type Id, type SketchFeature, type SketchSolution, type Vec3, type WhittleDocument, activeEnd, cadRevision, createEvaluator, deserializeDocument, validateCadSource, drawnEntities, entityOutline, expandSketch, frameAxes, planeOrigin, sketchGap, polylinePath, resolveEntity, thickenPath, toolForTip } from "@whittle/core";
 import { type Blueprint, Drawing, type Edge, type Face, draw, organiseBlueprints, type FaceFinder, Plane, type Shape3D, type Wire, asDir, basicFaceExtrusion, cast, downcast, genericSweep, getOC, makeHelix, makeOffset, makePln, drawCircle, importSTEP, loft, makeBox, makeSolid, Vector, makeCompound, makeCylinder, makeSphere, Transformation, measureArea, measureShapeVolumeProperties } from "replicad";
 import type { BodyResult, FeatureStatus, PartialCsys, RegenResult, SketchFrame } from "./protocol";
 import type { CoilFeature, DraftFeature, OffsetFaceFeature, PlaneRef, SweepFeature } from "@whittle/core";
@@ -182,23 +182,34 @@ function applyOpUnchecked(bodies: Map<Id, Shape3D>, featureId: Id, op: BodyOp, t
   return;
 }
 
+function manualCsysFrame(
+  id: Id,
+  placement: { position: readonly string[]; rotation: readonly string[] },
+  ev: Evaluator,
+): SketchFrame {
+  const origin = placement.position.map((expr, i) => ev.num(expr, "length", `Origin ${"XYZ"[i]}`)) as Vec3;
+  const [rx, ry, rz] = placement.rotation.map((expr, i) => ev.num(expr, "angle", `Rotation about ${"XYZ"[i]}`)) as Vec3;
+  const rotate = (v: Vec3) => rotateAbout(rotateAbout(rotateAbout(v, AXES.x, rx), AXES.y, ry), AXES.z, rz);
+  return { id, kind: "csys", origin, xDir: rotate(AXES.x), yDir: rotate(AXES.y), normal: rotate(AXES.z) };
+}
+
 function csysFrame(
   f: CsysFeature,
   ev: Evaluator,
   built: (id: Id) => SketchFrame | undefined,
   bodies: Map<Id, Shape3D>,
   showPartial?: (preview: PartialCsys) => void,
+  tool?: ReturnType<typeof toolForTip>,
 ): { frame: SketchFrame; warning?: string } {
-  if (f.mode === "manual") {
-    const origin = f.position.map((expr, i) => ev.num(expr, "length", `Origin ${"XYZ"[i]}`)) as Vec3;
-    const [rx, ry, rz] = f.rotation.map((expr, i) => ev.num(expr, "angle", `Rotation about ${"XYZ"[i]}`)) as Vec3;
-    const rotate = (v: Vec3) => rotateAbout(rotateAbout(rotateAbout(v, AXES.x, rx), AXES.y, ry), AXES.z, rz);
-    return { frame: { id: f.id, kind: "csys", origin, xDir: rotate(AXES.x), yDir: rotate(AXES.y), normal: rotate(AXES.z) } };
-  }
+  if (f.mode === "manual") return { frame: manualCsysFrame(f.id, f, ev) };
   let uncertain = false;
   const source = (input: CsysInput, label: string) => {
     const ref = f.refs?.[input];
     if (!ref) throw new FeatureError(`Pick ${label}.`, undefined, true);
+    if (tool && (ref.kind === "vertex" || ref.kind === "edge")
+      && !tool.components.some(({ bodyId }) => bodyId === ref.edge.bodyId)) {
+      throw new FeatureError("The component referenced by TIP is missing. Pick a component in this tool position.");
+    }
     if (ref.kind === "vertex" && input === "origin") {
       const match = resolveVertex(bodyForRefs(bodies, ref.edge.bodyId), ref);
       if (!match) throw new FeatureError("The edge locating the origin vertex changed. Pick the vertex again.");
@@ -239,6 +250,7 @@ function csysFrame(
     : unit(x, "The X reference has no direction.");
   const yDir = unit(cross(normal, f.flipX ? scale(xHint, -1) : xHint), "The X and Z references are parallel.");
   const xDir = cross(yDir, normal);
+  if (tool && uncertain) throw new FeatureError("A TIP edge or vertex no longer matches reliably. Pick the reference again.");
   return {
     frame: { id: f.id, kind: "csys", origin, xDir, yDir, normal },
     warning: uncertain ? "A coordinate system edge or vertex moved. Check that it is still the intended reference." : undefined,
@@ -454,7 +466,7 @@ export class Builder {
       !this.cache[gi]?.sketches.has(active.id)) {
       try {
         csysFrame(active, createEvaluator(doc.parameters, doc.units), (id) => beforeActive.sketches.get(id)?.frame, beforeActive.bodies,
-          (partial) => { partialCsys = partial; });
+          (partial) => { partialCsys = partial; }, toolForTip(doc, active.id));
       } catch {
         // The build status already describes the incomplete or invalid input.
       }
@@ -557,7 +569,10 @@ export class Builder {
     for (let i = 0; i < end; i++) {
       const f = doc.features[i]!;
       // Reference images aren't geometry. The key chains every step before this one, so it is hashed to stay a fixed size.
-      const key = hashKey(prev.key + "|" + (f.type === "import" ? importKey(f) + f.scale + !!f.suppressed : JSON.stringify(f.type === "sketch" ? { ...f, image: undefined, name: undefined } : { ...f, name: undefined })) + (f.type === "joint" ? compSig : ""));
+      const toolPosition = f.type === "csys" ? toolForTip(doc, f.id) : undefined;
+      const tool = this.ghostFeature === f.id ? undefined : toolPosition;
+      const toolSignature = toolPosition ? JSON.stringify([tool?.placement, toolPosition.components.map(({ bodyId }) => bodyId)]) : "";
+      const key = hashKey(prev.key + "|" + (f.type === "import" ? f.id + ":" + importKey(f) + f.scale + !!f.suppressed : JSON.stringify(f.type === "sketch" ? { ...f, image: undefined, name: undefined } : { ...f, name: undefined })) + (f.type === "joint" ? compSig : "") + toolSignature);
       const cached = this.cache[i];
       let snap: Snapshot;
       const needGhost = f.id === this.ghostFeature && !!(f as { op?: string }).op && !cached?.ghost;
@@ -565,7 +580,7 @@ export class Builder {
         snap = cached;
       } else {
         rebuilt++;
-        snap = this.step(f, prev, ev, key);
+        snap = this.step(f, prev, ev, key, tool);
       }
       nextCache.push(snap);
       this.onProgress?.(i + 1, end);
@@ -586,18 +601,45 @@ export class Builder {
     return { prev, statuses, rebuilt, end };
   }
 
-  private step(f: Feature, prev: Snapshot, ev: Evaluator, key: string): Snapshot {
-    const bodies = new Map(prev.bodies);
+  private step(f: Feature, prev: Snapshot, ev: Evaluator, key: string, tool?: ReturnType<typeof toolForTip>): Snapshot {
+    let bodies = new Map(prev.bodies);
     const sketches = new Map(prev.sketches);
     const t = performance.now();
-    if (f.suppressed) {
-      return { key, bodies, sketches, status: { id: f.id, state: "suppressed" } };
-    }
     ghostSink.tool = null;
     ghostSink.op = null;
     noteSink.text = undefined;
+    let errorBodies = prev.bodies;
     try {
+      let pose: SketchFrame | undefined;
+      if (tool) {
+        pose = manualCsysFrame(tool.id, tool.placement, ev);
+        const world: SketchFrame = { id: tool.id, kind: "csys", origin: [0, 0, 0], ...ORIGIN_FRAMES.XY! };
+        const identity = [...pose.origin, ...subv(pose.xDir, world.xDir),
+          ...subv(pose.yDir, world.yDir), ...subv(pose.normal, world.normal)].every((value) => Math.abs(value) < 1e-12);
+        if (!identity) {
+          const placed = new Map(bodies);
+          for (const { bodyId } of tool.components) {
+            const shape = bodies.get(bodyId);
+            if (shape) placed.set(bodyId, placeBetweenFrames(shape, world, pose));
+          }
+          errorBodies = placed;
+        }
+      }
+      if (f.suppressed) return { key, bodies: new Map(errorBodies), sketches, status: { id: f.id, state: "suppressed" } };
+      // Native CSYS references resolve against the tool-local bodies before either is placed.
       const warning = this.apply(f, bodies, sketches, ev);
+      if (pose) {
+        bodies = new Map(errorBodies);
+        const tip = sketches.get(f.id);
+        if (tip) {
+          const vector = (v: Vec3) => add(add(scale(pose.xDir, v[0]), scale(pose.yDir, v[1])), scale(pose.normal, v[2]));
+          const frame = tip.frame;
+          sketches.set(f.id, { ...tip, frame: {
+            ...frame, origin: add(pose.origin, vector(frame.origin)), xDir: vector(frame.xDir),
+            yDir: vector(frame.yDir), normal: vector(frame.normal),
+          } });
+        }
+      }
       return {
         key,
         bodies,
@@ -611,7 +653,7 @@ export class Builder {
       const incomplete = e instanceof FeatureError && e.warning;
       return {
         key,
-        bodies: new Map(prev.bodies),
+        bodies: new Map(errorBodies),
         sketches,
         status: { id: f.id, state: incomplete ? "incomplete" : "error", message: describeError(f, e), fix, ms: performance.now() - t },
       };
@@ -664,7 +706,7 @@ export class Builder {
       }
 
       case "csys": {
-        const { frame, warning } = csysFrame(f, ev, (id) => sketches.get(id)?.frame, bodies);
+        const { frame, warning } = csysFrame(f, ev, (id) => sketches.get(id)?.frame, bodies, undefined, toolForTip(this.curDoc!, f.id));
         sketches.set(f.id, { frame, drawing: null });
         return warning;
       }
@@ -1828,7 +1870,7 @@ function importKey(f: Extract<Feature, { type: "import" }>): string {
   const source = JSON.stringify([f.format, f.cadSource]);
   const known = importKeys.get(f.id);
   if (known && known.data === f.data && known.source === source) return known.key;
-  const key = `${f.id}:${f.data.length}:${hashKey(f.data)}:${source}`;
+  const key = `${f.data.length}:${hashKey(f.data)}:${source}`;
   importKeys.set(f.id, { data: f.data, source, key });
   return key;
 }
