@@ -24,7 +24,9 @@ export const whittleCad: CamCadAdapter = {
 
     return selection.flatMap<CamGeometryRef>((pick) => {
       if (pick.kind === "body" && !toolForBody(doc, pick.bodyId)) return [{ documentId, kind: "body", entityId: pick.bodyId }];
-      if (pick.kind === "sketch") return [{ documentId, kind: "sketch", entityId: pick.sketchId }];
+      if (pick.kind === "sketch" || pick.kind === "region") {
+        return [{ documentId, kind: "sketch", entityId: pick.sketchId }];
+      }
       return [];
     });
   },

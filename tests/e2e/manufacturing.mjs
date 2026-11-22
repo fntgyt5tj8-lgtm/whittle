@@ -198,14 +198,43 @@ try {
     const sketch = doc.features.find((item) => item.name === "CAM test circle");
     return builtDoc === doc && regen?.sketches.some((item) => item.id === sketch?.id);
   });
-  await page.evaluate(() => {
-    const app = window.whittle.useApp;
-    const sketch = app.getState().doc.features.find((item) => item.name === "CAM test circle");
-    app.setState({ selection: [{ kind: "sketch", sketchId: sketch.id }] });
-  });
   await manufacturing.click();
   await addProfile.click();
   await properties.getByRole("heading", { name: "Profile 3" }).waitFor();
+  const useSketch = properties.getByRole("button", { name: "Use Selected Sketch" });
+  assert.equal(await useSketch.isDisabled(), true);
+  const sketchRow = page.getByRole("navigation", { name: "Design browser" })
+    .getByRole("button", { name: "CAM test circle", exact: true });
+  await sketchRow.click();
+  await useSketch.click();
+  await properties.getByText("CAM test circle", { exact: true }).waitFor();
+  await first.click();
+  await page.evaluate(() => window.whittle.useApp.setState({ selection: [] }));
+  assert.equal(await useSketch.isDisabled(), true);
+  await page.evaluate(() => window.whittle.viewportRef.current.viewTo("top"));
+  await page.waitForFunction(() => !window.whittle.viewportRef.current.anim);
+  const sketchPoint = await page.evaluate(() => {
+    const { doc, regen } = window.whittle.useApp.getState();
+    const sketch = doc.features.find((item) => item.name === "CAM test circle");
+    const frame = regen.sketches.find((item) => item.id === sketch.id);
+    const vp = window.whittle.viewportRef.current;
+    const bounds = document.querySelector(".viewport canvas").getBoundingClientRect();
+    for (let i = 0; i < 16; i++) {
+      const angle = i * Math.PI / 8;
+      const world = frame.origin.map((value, axis) => value
+        + frame.xDir[axis] * (2 + 8 * Math.cos(angle)) + frame.yDir[axis] * (3 + 8 * Math.sin(angle)));
+      const [x, y] = vp.worldToScreen(world);
+      const clientX = bounds.left + x * bounds.width / vp.size.x;
+      const clientY = bounds.top + y * bounds.height / vp.size.y;
+      const pick = vp.pick({ clientX, clientY });
+      if (pick?.sketchId === sketch.id) return [clientX, clientY];
+    }
+  });
+  assert.ok(sketchPoint, "The circle can be picked in the 3D view");
+  await page.mouse.click(...sketchPoint);
+  await useSketch.click();
+  await properties.getByText("CAM test circle", { exact: true }).waitFor();
+  await history.getByRole("button", { name: "Profile 3 · Main machining" }).click();
   await properties.getByLabel("Flat endmill diameter (mm)").fill("4");
   await properties.getByLabel("Cut depth (mm)").fill("2");
   await properties.getByLabel("Clearance above sketch (mm)").fill("5");

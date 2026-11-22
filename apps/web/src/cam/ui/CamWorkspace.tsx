@@ -70,6 +70,20 @@ export function useCamWorkspace(
     setSelectedKey();
   }
 
+  const selectedSketch = cad.getSelection().find((ref) => ref.kind === "sketch");
+  const contourName = process?.contour && cad.resolveGeometry(process.contour)?.name;
+  const canAssignSketch = !!process && !!selectedSketch
+    && (selectedSketch.entityId !== process.contour?.entityId || selectedSketch.documentId !== process.contour?.documentId)
+    && !!cad.resolveCircularProfile?.(selectedSketch);
+
+  function assignSelectedSketch() {
+    if (!process || !selectedSketch || !canAssignSketch) return;
+    setProject((current) => ({
+      ...current,
+      processes: current.processes.map((item) => item.id === process.id ? { ...item, contour: selectedSketch } : item),
+    }), "Assign operation profile sketch");
+  }
+
   const tools = project.toolPositions ?? [];
   const operationTool = tools.find((tool) => tool.id === process?.toolPositionId);
   const assignedTrack = process?.track;
@@ -89,7 +103,7 @@ export function useCamWorkspace(
     if (!setup || !context) return;
     const number = project.processes.length + 1;
     const id = uid("profile");
-    const contour = cad.getSelection().find((ref) => ref.kind === "sketch")
+    const contour = selectedSketch
       ?? (setup.part?.kind === "sketch" ? setup.part : undefined);
     setProject((current) => addProcess(current, {
       id, name: `Profile ${number}`, setupId: setup.id, contextId: context.id, kind: "profile", contour,
@@ -228,8 +242,18 @@ export function useCamWorkspace(
           {unit && <><dt>Execution unit</dt><dd>{unit.name}</dd></>}
         </>}
       </dl>
-      {process && !process.contour && <p>Select a sketch with one circle before adding a profile to export APT-CL.</p>}
-      {process && <ProfileExport key={`${documentId}/${process.id}/${process.toolPositionId ?? ""}/${operationTool?.cutting?.diameter ?? ""}`}
+      {process && <>
+        <dl>
+          <dt>Profile sketch</dt>
+          <dd>{contourName ?? (process.contour ? "Unavailable" : "Unassigned")}</dd>
+        </dl>
+        <div className="cam-properties__actions">
+          <button type="button" disabled={!canAssignSketch} onClick={assignSelectedSketch}>Use Selected Sketch</button>
+        </div>
+        {!canAssignSketch && (!process.contour || !cad.resolveCircularProfile?.(process.contour)) &&
+          <p>Select a sketch with one circle in the 3D view or Browser.</p>}
+      </>}
+      {process && <ProfileExport key={`${documentId}/${process.id}/${process.contour?.entityId ?? ""}/${process.toolPositionId ?? ""}/${operationTool?.cutting?.diameter ?? ""}`}
         name={process.id} settings={process.profile} onChange={changeProfile} resolveFrame={resolveFrame} validateReferences={operationErrors}
         hasContour={!!process.contour} hasTool={process.toolPositionId !== undefined} toolDiameter={operationTool?.cutting?.diameter}
         resolve={() => process.contour && cad.resolveCircularProfile?.(process.contour)} />}
