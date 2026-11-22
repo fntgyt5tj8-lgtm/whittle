@@ -159,3 +159,27 @@
   top: auto;
   bottom: 64px;
 }
+
+.cam-contour__scrub {
+  display: grid;
+  gap: 4px;
+  margin: 10px 0;
+}
+
+.cam-contour__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+
+.cam-contour__legend span::before {
+  content: "";
+  display: inline-block;
+  width: .9em;
+  border-top: 2px solid #a875e8;
+  margin-right: .35em;
+  vertical-align: middle;
+}
+
+.cam-contour__legend span:nth-child(2)::before { border-top: 3px solid #12b9bd; }
+.cam-contour__legend span:nth-child(3)::before { border-color: #ec9d36; }

@@ -10,6 +10,8 @@
  */
 import { CSYS_INPUT_KINDS, type BodyOp, type CsysFeature, type CsysInput, type EdgeRef, type LengthUnit, lengthText, type Evaluator, type FaceRef, type Feature, type HoleFeature, type Id, type SketchFeature, type SketchSolution, type Vec3, type WhittleDocument, activeEnd, cadRevision, createEvaluator, deserializeDocument, validateCadSource, drawnEntities, entityOutline, expandSketch, frameAxes, planeOrigin, sketchGap, polylinePath, resolveEntity, thickenPath, toolForBody, toolForTip } from "@whittle/core";
 import { type Blueprint, Drawing, type Edge, type Face, draw, organiseBlueprints, type FaceFinder, Plane, type Shape3D, type Wire, asDir, basicFaceExtrusion, cast, downcast, genericSweep, getOC, makeHelix, makeOffset, makePln, drawCircle, importSTEP, loft, makeBox, makeSolid, Vector, makeCompound, makeCylinder, makeSphere, Transformation, measureArea, measureShapeVolumeProperties } from "replicad";
+import { canCut, cuttingComponent, type CamCuttingGeometry, type CamResult, type CamToolPosition } from "@whittle/cam";
+import { sourceToolParameters } from "@whittle/core";
 import type { BodyResult, FeatureStatus, PartialCsys, RegenResult, SketchFrame } from "./protocol";
 import type { CoilFeature, DraftFeature, OffsetFaceFeature, PlaneRef, SweepFeature } from "@whittle/core";
 import "./fastTopo";
@@ -377,17 +379,18 @@ export class Builder {
   }
   /** Parsed imported files, keyed by feature id + content length + content head. */
   private imports = new Map<string, Shape3D>();
+  private cuttingParameters = new Map<string, CamResult<CamCuttingGeometry>>();
   private importErrors = new Map<string, string>();
 
   /** Parse any imported files the document needs (async, so done before regen). */
   async prepareImports(doc: WhittleDocument): Promise<void> {
     // Parsed files no step uses any more are let go, keeping a few in case an undo brings them back (audit K-5).
     const using = new Set(doc.features.flatMap((f) => (f.type === "import" ? [importKey(f)] : [])));
-    for (const cache of [this.imports, this.importErrors] as Map<string, unknown>[]) {
+    for (const cache of [this.imports, this.importErrors, this.cuttingParameters] as Map<string, unknown>[]) {
       const unused = [...cache.keys()].filter((k) => !using.has(k));
       for (const k of unused.slice(0, Math.max(0, unused.length - 4))) cache.delete(k);
     }
-    const snapshots = new Map<string, { doc: WhittleDocument; revision: string; bodies: Map<Id, Shape3D> }>();
+    const snapshots = new Map<string, { doc: WhittleDocument; revision: string; bodies: Map<Id, Shape3D>; cutting: CamResult<CamCuttingGeometry> }>();
     for (const f of doc.features) {
       if (f.type !== "import") continue;
       const key = importKey(f);
@@ -403,7 +406,7 @@ export class Builder {
             validateCadSource(f.cadSource, sub, revision);
             const nested = new Builder();
             await nested.prepareImports(sub);
-            snapshot = { doc: sub, revision, bodies: nested.shapes(sub) };
+            snapshot = { doc: sub, revision, bodies: nested.shapes(sub), cutting: sourceToolParameters(sub) };
             snapshots.set(f.data, snapshot);
           } else {
             validateCadSource(f.cadSource, snapshot.doc, snapshot.revision);
@@ -411,6 +414,7 @@ export class Builder {
           const shape = snapshot.bodies.get(f.cadSource.bodyId);
           if (!shape) throw new Error("The CAD source body could not be built.");
           this.imports.set(key, shape);
+          this.cuttingParameters.set(key, snapshot.cutting);
         } else {
           const bytes = Uint8Array.from(atob(f.data), (c) => c.charCodeAt(0));
           const blob = new Blob([bytes]);
@@ -548,7 +552,39 @@ export class Builder {
       }
     }
     for (const s of statuses) if (CELL_INFO.has(s.id)) s.cells = CELL_INFO.get(s.id);
-    return { bodies, sketches, planes, partialCsys, status: statuses, pickBodies, ghost, ghostOp: ghost ? ghostOp : undefined, ms: performance.now() - t0, rebuilt };
+    const camToolCutting = doc.manufacturing?.toolPositions?.map((tool) => ({
+      toolId: tool.id, result: this.resolveToolCutting(tool, doc.features.slice(0, end), prev.bodies),
+    }));
+    return { bodies, sketches, planes, camToolCutting, partialCsys, status: statuses, pickBodies, ghost, ghostOp: ghost ? ghostOp : undefined, ms: performance.now() - t0, rebuilt };
+  }
+
+  private resolveToolCutting(
+    tool: CamToolPosition, features: Feature[], bodies: ReadonlyMap<Id, Shape3D>,
+  ): CamResult<CamCuttingGeometry> {
+    const component = cuttingComponent(tool);
+    if (!component) {
+      const error = tool.components.some(({ role }) => canCut(role))
+        ? "Select the cutting component for this tool position."
+        : "Add a cutter or insert to this tool position.";
+      return { ok: false, errors: [error] };
+    }
+    if (!bodies.has(component.bodyId)) return { ok: false, errors: ["The cutting component body is unavailable."] };
+    // Move copies keep the native source of their input body. Follow only earlier steps.
+    let bodyId: Id | undefined = component.bodyId;
+    for (let index = features.length - 1; index >= 0; index--) {
+      const feature = features[index]!;
+      if (feature.id !== bodyId || feature.suppressed) continue;
+      if (feature.type === "move" && feature.copy) {
+        bodyId = feature.bodyId;
+      } else if (feature.type === "import" && feature.cadSource && feature.format === "whittle") {
+        const result = this.cuttingParameters.get(importKey(feature));
+        if (result) return result;
+        break;
+      } else {
+        break;
+      }
+    }
+    return { ok: false, errors: ["The cutting component needs a pinned native .whittle part."] };
   }
 
   /** The final body shapes of the active timeline (for export). */

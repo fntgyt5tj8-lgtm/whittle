@@ -14,6 +14,8 @@ export type CamMotion = MotionEndpoints & (
     readonly kind: "arc";
     readonly center: CamVector;
     readonly normal: CamVector;
+    /** For a helix the center lies in the start plane and the endpoint carries axial travel. */
+    readonly helical?: true;
     /** Viewed from the positive end of the normal. */
     readonly direction: "cw" | "ccw";
   }

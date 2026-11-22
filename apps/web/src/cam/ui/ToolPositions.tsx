@@ -1,5 +1,5 @@
 import { castDraft } from "immer";
-import { CAM_TOOL_COMPONENT_ROLES, type CamToolComponentRole, type CamToolPosition } from "@whittle/cam";
+import { CAM_TOOL_COMPONENT_ROLES, canCut, cuttingComponent, type CamToolComponentRole, type CamToolPosition } from "@whittle/cam";
 import {
   activeEnd, bodyIdsBefore, type MoveFeature, makeCsys, makeMove, removeCamToolGeometry, toolForBody, uid,
 } from "@whittle/core";
@@ -156,6 +156,7 @@ function PositionProperties({ tool }: { tool: CamToolPosition }) {
     pick.kind === "body" || pick.kind === "face" || pick.kind === "edge")?.bodyId);
   const [role, setRole] = useState<CamToolComponentRole>("cutter");
   const isolated = useApp((s) => s.isolatedToolId === tool.id);
+  const candidates = tool.components.filter(({ role }) => canCut(role));
   const hasGeometry = useApp((s) => s.builtDoc === s.doc
     && s.regen?.bodies.some((body) => tool.components.some(({ bodyId }) => bodyId === body.id)));
   const active = doc.features.slice(0, activeEnd(doc)).some((f) => f.id === tool.tipCsysId);
@@ -188,22 +189,15 @@ function PositionProperties({ tool }: { tool: CamToolPosition }) {
       </div>
       <button type="button" className="btn btn--small" disabled={!active}
         onClick={() => selectTool({ kind: "tip", toolId: tool.id, tipId: tool.tipCsysId })}>Edit TIP</button>
-      <details className="cam-tool__placement" open>
-        <summary>Cutting definition</summary>
-        <label>Flat endmill diameter (mm)
-          <DeferredInput className="input input--small" type="number" min="0" step="any"
-            value={tool.cutting ? String(tool.cutting.diameter) : ""} onCommit={(value) => {
-              const diameter = Number(value);
-              if (value.trim() && (!Number.isFinite(diameter) || diameter <= 0)) {
-                toast("warn", "Enter a positive cutting diameter.");
-                return;
-              }
-              editTool(tool.id, "Edit cutting definition", (item) => ({
-                ...item, cutting: value.trim() ? { kind: "flat-endmill", diameter } : undefined,
-              }));
-            }} />
-        </label>
-      </details>
+      {candidates.length > 1 && <label>Cutting component <select value={tool.cuttingBodyId ?? ""}
+        onChange={(event) => {
+          const cuttingBodyId = event.target.value || undefined;
+          editTool(tool.id, "Select cutting component", (item) => ({ ...item, cuttingBodyId }));
+        }}>
+        <option value="">Select component</option>
+        {candidates.map(({ bodyId }) => <option key={bodyId} value={bodyId}>{doc.bodies[bodyId]?.name ?? bodyId}</option>)}
+      </select></label>}
+      <CuttingParameters toolId={tool.id} />
       <button type="button" className="btn btn--small" onClick={() => {
         commitSession();
         mutate("Delete tool position", (d) => {
@@ -214,6 +208,24 @@ function PositionProperties({ tool }: { tool: CamToolPosition }) {
       }}>Delete Tool</button>
     </>
   );
+}
+
+function CuttingParameters({ toolId }: { toolId: string }) {
+  const result = useApp((s) => s.builtDoc === s.doc
+    ? s.regen?.camToolCutting?.find((entry) => entry.toolId === toolId)?.result : undefined);
+  if (!result) return null;
+  if (!result.ok) return <p>{result.errors.join(" ")}</p>;
+  const { type, family, diameter, cutterLength, fluteLength, shankDiameter } = result.value;
+  return <div className="cam-tool__placement">
+    <h3>Inherited cutting parameters</h3>
+    <dl>
+      <dt>TYPE</dt><dd>{type} · {family}</dd>
+      <dt>Cutter diameter</dt><dd>{diameter} mm</dd>
+      {cutterLength !== undefined && <><dt>Cutter length</dt><dd>{cutterLength} mm</dd></>}
+      {fluteLength !== undefined && <><dt>Flute length</dt><dd>{fluteLength} mm</dd></>}
+      {shankDiameter !== undefined && <><dt>Shank diameter</dt><dd>{shankDiameter} mm</dd></>}
+    </dl>
+  </div>;
 }
 
 function ComponentProperties({ tool, bodyId, role }: { tool: CamToolPosition; bodyId: string; role: CamToolComponentRole }) {
@@ -239,7 +251,9 @@ function ComponentProperties({ tool, bodyId, role }: { tool: CamToolPosition; bo
         <label>Role <select aria-label="Role" value={role} onChange={(event) => {
           const role = event.target.value as CamToolComponentRole;
           editTool(tool.id, "Change component role", (item) => ({
-            ...item, components: item.components.map((component) => component.bodyId === bodyId ? { ...component, role } : component),
+            ...item,
+            cuttingBodyId: item.cuttingBodyId === bodyId && !canCut(role) ? undefined : item.cuttingBodyId,
+            components: item.components.map((component) => component.bodyId === bodyId ? { ...component, role } : component),
           }));
         }}>
           {CAM_TOOL_COMPONENT_ROLES.map((option) => <option key={option}>{option}</option>)}
@@ -253,6 +267,8 @@ function ComponentProperties({ tool, bodyId, role }: { tool: CamToolPosition; bo
             });
           }} /> Visible</label>
       </div>
+      {cuttingComponent(tool)?.bodyId === bodyId ? <CuttingParameters toolId={tool.id} />
+        : <p>{canCut(role) ? "Select the cutting component in the tool position." : "Noncutting component"}</p>}
       <h3>Placement relative to TIP</h3>
       {placements.length ? <ul>{placements.map((move) => (
         <li key={move.id}>{move.placement

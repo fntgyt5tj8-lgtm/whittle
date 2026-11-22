@@ -49,6 +49,16 @@ try {
   const manufacturing = page.getByRole("tab", { name: "Manufacturing" });
   const command = (id) => page.evaluate((id) => window.whittle.commands.find((item) => item.id === id).run(), id);
   const name = "manufacturing-source.whittle";
+  await page.evaluate((diameter) => {
+    const { useApp } = window.whittle;
+    const { doc } = useApp.getState();
+    useApp.setState({ doc: { ...doc, parameters: [
+      ...doc.parameters,
+      { id: "cam-type", name: "TYPE", expr: "0", kind: "number" },
+      { id: "cam-diameter", name: "CUTTER_DIAMETER", expr: String(diameter), kind: "length" },
+      { id: "cam-shank", name: "CORP_DIAMETER", expr: "6 mm", kind: "length" },
+    ] } });
+  }, 4);
   await command("save");
   await page.waitForFunction((name) => window.camTestFiles.files.has(name), name);
   const source = await page.evaluate(async (name) => Array.from(new Uint8Array(await window.camTestFiles.files.get(name).arrayBuffer())), name);
@@ -295,9 +305,10 @@ try {
   await properties.getByRole("button", { name: "Add Tool Position" }).click();
   const positions = page.getByRole("region", { name: "Tool positions" });
   const toolId = await page.evaluate(() => window.whittle.useApp.getState().doc.manufacturing.toolPositions[0].id);
-  const diameter = properties.getByLabel("Flat endmill diameter (mm)");
-  await diameter.fill("4");
-  await diameter.press("Tab");
+  const toolSource = page.waitForEvent("filechooser");
+  await properties.getByRole("button", { name: "Insert Body", exact: true }).click();
+  await (await toolSource).setFiles({ name, mimeType: "application/vnd.whittle+zip", buffer: Buffer.from(source) });
+  await properties.getByText("0 · FLAT", { exact: true }).waitFor();
   const third = history.getByRole("button", { name: "Profile 3 · Main machining" });
   const toolPicker = properties.getByLabel("Tool position", { exact: true });
   const spindle = properties.getByLabel("Spindle speed (rpm)");

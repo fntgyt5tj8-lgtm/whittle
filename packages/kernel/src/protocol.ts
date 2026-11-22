@@ -3,6 +3,7 @@
  * The default implementation runs OpenCascade (WASM) in a Web Worker; a native
  * sidecar or a remote kernel can implement the same messages later.
  */
+import type { CamCuttingGeometry, CamResult } from "@whittle/cam";
 import type { CsysFeature, Id, SketchSolution, Vec3, WhittleDocument } from "@whittle/core";
 
 export interface FaceInfo {
@@ -106,6 +107,7 @@ export interface RegenResult {
   sketches: SketchFrame[];
   /** Construction planes, for display and picking. */
   planes: SketchFrame[];
+  camToolCutting?: { toolId: string; result: CamResult<CamCuttingGeometry> }[];
   partialCsys?: PartialCsys;
   status: FeatureStatus[];
   /** Bodies as they were just before pickBefore (for picking while a feature previews). */

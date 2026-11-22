@@ -3,10 +3,19 @@ import type { CamGeometryRef } from "@whittle/cam";
 import type { CamCadAdapter } from "./cadAdapter";
 import { findFeature, useApp } from "../state/store";
 
+import { edgeRefFromPick, faceRefFromPick } from "../state/actions";
+import { modelAnchor, resolveModelEdge, resolveModelFloor } from "./modelReferences";
+import { sketchContour } from "./sketchContour";
+
 export const whittleCad: CamCadAdapter = {
   getCoordinateSystems() {
     const { doc } = useApp.getState();
     return doc.features.filter((feature) => feature.type === "csys" && !toolForTip(doc, feature.id));
+  },
+
+  resolveToolCutting(id) {
+    const { doc, builtDoc, regen } = useApp.getState();
+    return builtDoc === doc ? regen?.camToolCutting?.find(({ toolId }) => toolId === id)?.result : undefined;
   },
 
   resolveCoordinateSystem(id) {
@@ -37,6 +46,63 @@ export const whittleCad: CamCadAdapter = {
     if (regen?.status.find((item) => item.id === ref.entityId)?.state !== "ok") return undefined;
     const frame = regen?.sketches.find((item) => item.id === ref.entityId);
     return frame && { origin: frame.origin, x: frame.xDir, y: frame.yDir, z: frame.normal };
+  },
+
+  resolveContour(ref) {
+    const { doc, regen } = useApp.getState();
+    const sketch = findFeature(doc, ref.entityId, "sketch");
+    if (!sketch || !whittleCad.resolveSketchFrame(ref)) {
+      return { ok: false, errors: ["The selected sketch is missing, failed to build, or is still updating."] };
+    }
+    return sketchContour(doc, sketch, regen?.sketches.find((item) => item.id === ref.entityId)?.solution);
+  },
+
+  selectedEdges() {
+    const { doc, builtDoc, selection, regen } = useApp.getState();
+    if (doc !== builtDoc) return [];
+    return selection.flatMap((pick) => {
+      const edge = edgeRefFromPick(pick);
+      const body = edge && regen?.bodies.find((item) => item.id === edge.bodyId);
+      return edge && body && !toolForBody(doc, edge.bodyId) ? [{ ...edge, anchor: modelAnchor(body) }] : [];
+    });
+  },
+
+  selectedFloor() {
+    const { doc, builtDoc, selection, regen } = useApp.getState();
+    if (doc !== builtDoc) return;
+    const faces = selection.flatMap((pick) => {
+      const face = faceRefFromPick(pick);
+      return face && !toolForBody(doc, face.bodyId) ? [face] : [];
+    });
+    const face = faces.length === 1 ? faces[0] : undefined;
+    const body = face && regen?.bodies.find((item) => item.id === face.bodyId);
+    return face?.surface === "PLANE" && body ? { ...face, anchor: modelAnchor(body) } : undefined;
+  },
+
+  resolveEdge(ref) {
+    const { doc, builtDoc, regen } = useApp.getState();
+    if (doc !== builtDoc) return;
+    const body = regen?.bodies.find((item) => item.id === ref.bodyId);
+    const edge = body && resolveModelEdge(body, ref);
+    return edge?.ends && { ...edge, ends: edge.ends };
+  },
+
+  resolveFloor(ref) {
+    const { doc, builtDoc, regen } = useApp.getState();
+    if (doc !== builtDoc) return;
+    const body = regen?.bodies.find((item) => item.id === ref.bodyId);
+    const face = body && resolveModelFloor(body, ref);
+    return face && { ...face, bodyId: ref.bodyId, anchor: ref.anchor };
+  },
+
+  resolveToolBodies(ids) {
+    const { doc, builtDoc, regen } = useApp.getState();
+    return builtDoc === doc && ids.every((id) => {
+      const feature = findFeature(doc, id);
+      return regen?.bodies.some((body) => body.id === id)
+        && feature && regen.status.some((status) => status.id === feature.id && status.state === "ok")
+        && whittleCad.resolveGeometry({ documentId: doc.id!, kind: "body", entityId: id });
+    });
   },
 
   resolveCircularProfile(ref) {

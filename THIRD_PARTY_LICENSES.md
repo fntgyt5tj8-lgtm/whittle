@@ -11,6 +11,7 @@ Whittle is MPL-2.0. It builds on these open-source projects:
 | [React](https://react.dev) | MIT | UI |
 | [zustand](https://github.com/pmndrs/zustand) | MIT | UI state |
 | [Immer](https://immerjs.github.io/immer/) | MIT | Undo/redo patches |
+| [Clipper2 TypeScript port](https://github.com/countertype/clipper2-ts) | BSL-1.0 | Planar polygon offsets for concave pockets and islands. The build includes the license under `licenses/clipper2-ts.txt`. |
 | [fflate](https://github.com/101arrowz/fflate) | MIT | .whittle and .3mf containers |
 | [IBM Plex Sans](https://github.com/IBM/plex), [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono) | SIL OFL 1.1 | Bundled fonts |
 | [Tauri](https://tauri.app) | MIT / Apache-2.0 | Desktop shell |

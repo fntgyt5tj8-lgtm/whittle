@@ -33,9 +33,19 @@ import {
   toolForBody,
   toolForTip,
 } from "@whittle/core";
+import type { CamFrame, ContourPreview } from "@whittle/cam";
 import type { RegenResult } from "@whittle/kernel";
 import { type Platform, ask } from "./platform";
 import { type Prefs, type ThemeId, type ThemePref, applyPrefs, loadPrefs, normalizePrefs, resolveTheme, savePrefs } from "./prefs";
+
+export interface CamContourPlayback {
+  readonly doc: WhittleDocument;
+  readonly path: ContourPreview;
+  readonly tip: CamFrame;
+  readonly ids: readonly string[];
+  readonly showTool: boolean;
+  readonly showCenterline?: boolean;
+}
 
 /** `at` is the world point that was clicked (used by holes and measuring). */
 export type Pick =
@@ -141,6 +151,8 @@ export interface AppState {
   selection: Pick[];
   camBrowserTab: "browser" | "tools";
   camToolSelection: CamToolSelection | null;
+  camContourPlayback: CamContourPlayback | null;
+  camContourProgress: number;
   isolatedToolId: Id | null;
   camProfileSketchPicking: boolean;
   hover: Pick | null;
@@ -210,6 +222,8 @@ export const useApp = create<AppState>(() => ({
   selection: [],
   camBrowserTab: "browser",
   camToolSelection: null,
+  camContourPlayback: null,
+  camContourProgress: 0,
   isolatedToolId: null,
   camProfileSketchPicking: false,
   hover: null,
@@ -316,6 +330,8 @@ export function replaceDocument(doc: WhittleDocument, fileName: string | null, d
     documentKind,
     camBrowserTab: "browser",
     camToolSelection: null,
+    camContourPlayback: null,
+    camContourProgress: 0,
     isolatedToolId: null,
     camProfileSketchPicking: false,
     ribbonTab: documentKind === "cam" ? "manufacturing" : "solid",
@@ -516,7 +532,10 @@ export function deleteFeature(id: Id) {
     mutate(`Remove ${f.name} from tool`, (d) => {
       removeCamToolGeometry(d, tool, id);
       const position = d.manufacturing?.toolPositions?.find((item) => item.id === tool.id);
-      if (position) position.components = position.components.filter((item) => item.bodyId !== id);
+      if (position) {
+        position.components = position.components.filter((item) => item.bodyId !== id);
+        if (position.cuttingBodyId === id) delete position.cuttingBodyId;
+      }
     });
     return set({ selection: [] });
   }

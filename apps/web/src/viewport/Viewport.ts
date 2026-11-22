@@ -15,7 +15,7 @@ import { LineSegmentsGeometry } from "three/examples/jsm/lines/LineSegmentsGeome
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import type { BodyMeta, Id, OriginPlane, SketchImage, Vec2, Vec3 } from "@whittle/core";
 import type { BodyResult, PartialCsys, SketchFrame } from "@whittle/kernel";
-import type { Pick, ViewSettings } from "../state/store";
+import type { CamContourPlayback, Pick, ViewSettings } from "../state/store";
 import { lookById } from "./looks";
 import { VIEWPORT_THEMES, type ViewportTheme } from "./theme";
 import { type NavPreset, navAction } from "../state/prefs";
@@ -81,7 +81,7 @@ export interface ViewportCallbacks {
 interface BodyView {
   id: Id;
   data: BodyResult;
-  mesh: THREE.Mesh;
+  mesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial>;
   edges: LineSegments2;
   /** Section-view cap: back faces drawn flat so cut bodies look solid. */
   cap?: THREE.Mesh;
@@ -188,6 +188,10 @@ export class Viewport {
   private imageGroup = new THREE.Group();
   private textures = new Map<string, THREE.Texture>();
   private previewGroup = new THREE.Group();
+  private camPathGroup = new THREE.Group();
+  private camToolGroup = new THREE.Group();
+  private camTipOrigin = new THREE.Vector3();
+  private camPath?: CamContourPlayback["path"];
   private highlightGroup = new THREE.Group();
   private grid = new THREE.Group();
   /** World Z, drawn with the grid while modelling (in a sketch the grid's own axes take over). */
@@ -254,7 +258,7 @@ export class Viewport {
     this.scene.environmentRotation.set(Math.PI / 2, 0, 0);
 
     this.persp.up.set(0, 0, 1);
-    this.scene.add(this.shadow, this.imageGroup, this.world, this.fillGroup, this.sketchGroup, this.previewGroup, this.overlay, this.highlightGroup, this.measureGroup, this.flagGroup, this.grid, this.axisZ, this.planes, this.cplanes, this.hemi, this.persp, this.orthoCam);
+    this.scene.add(this.shadow, this.imageGroup, this.world, this.fillGroup, this.sketchGroup, this.previewGroup, this.camPathGroup, this.camToolGroup, this.overlay, this.highlightGroup, this.measureGroup, this.flagGroup, this.grid, this.axisZ, this.planes, this.cplanes, this.hemi, this.persp, this.orthoCam);
     // Each light rides with its camera and aims at the camera itself, so its offset is a direction in view space.
     // (A light's target is the world origin unless it's parented too, which makes every light a plain headlight.)
     const rig = (cam: THREE.Camera, key: THREE.DirectionalLight, fill: THREE.DirectionalLight) => {
@@ -899,6 +903,59 @@ export class Viewport {
       parent.remove(v.cap);
       this.disposeObject(v.cap, true);
     }
+  }
+
+  setCamContour(playback: CamContourPlayback | null, bodies: BodyResult[], meta: Record<Id, BodyMeta>) {
+    const pathChanged = this.camPath !== playback?.path;
+    this.camPath = playback?.path;
+    this.clearGroup(this.camPathGroup);
+    this.clearGroup(this.camToolGroup);
+    if (!playback) {
+      this.invalidate();
+      return;
+    }
+    const { path, tip } = playback;
+    const addPath = (paths: readonly (typeof path.centerline)[], color: string, width: number, order: number) => {
+      const segmentPositions = paths.flatMap((points) => points.slice(1).flatMap((point, i) => [...points[i]!, ...point]));
+      const geometry = new LineSegmentsGeometry();
+      geometry.setPositions(segmentPositions);
+      const mat = this.lineMat(color, width);
+      mat.depthWrite = false;
+      // Keep toolpaths on a model face readable without drawing through solids.
+      mat.polygonOffset = true;
+      mat.polygonOffsetUnits = -1;
+      const line = new LineSegments2(geometry, mat);
+      line.renderOrder = order;
+      this.camPathGroup.add(line);
+    };
+    addPath(path.programmedPaths, "#a875e8", 5, 20);
+    if (playback.showCenterline !== false) addPath(path.cuttingPasses, "#12b9bd", 2.5, 21);
+    addPath([...path.linkingMoves, ...path.entryPaths], "#ec9d36", 2.5, 22);
+
+    if (playback.showTool) {
+      for (const body of bodies) {
+        const m = meta[body.id];
+        const v = this.makeBodyView(body, m?.color ?? "#b7bfc9", false, m?.look, m?.opacity);
+        if (v.cap) this.disposeObject(v.cap, true);
+        this.disposeObject(v.edges);
+        v.mesh.material.visible = true;
+        this.camToolGroup.add(v.mesh);
+      }
+    }
+    const basis = (frame: typeof tip) => new THREE.Matrix4().makeBasis(
+      new THREE.Vector3(...frame.x), new THREE.Vector3(...frame.y), new THREE.Vector3(...frame.z),
+    );
+    const rotation = basis(path.frame).multiply(basis(tip).transpose());
+    this.camToolGroup.quaternion.setFromRotationMatrix(rotation);
+    this.camTipOrigin.set(...tip.origin).applyMatrix4(rotation);
+    this.setCamContourProgress(0);
+    if (pathChanged) this.viewTo("fit");
+  }
+
+  setCamContourProgress(progress: number) {
+    if (!this.camPath) return;
+    this.camToolGroup.position.set(...this.camPath.pointAt(progress)).sub(this.camTipOrigin);
+    this.invalidate();
   }
 
   setBodies(list: BodyResult[], meta: Record<Id, BodyMeta>, isolated?: ReadonlySet<Id>) {
@@ -2008,6 +2065,8 @@ export class Viewport {
   private frameBox(): THREE.Box3 {
     const box = new THREE.Box3();
     for (const v of this.bodies.values()) if (v.visible && v.mesh.geometry.boundingBox) box.union(v.mesh.geometry.boundingBox);
+    box.union(new THREE.Box3().setFromObject(this.camPathGroup));
+    box.union(new THREE.Box3().setFromObject(this.camToolGroup));
     const sketches = new THREE.Box3().setFromObject(this.sketchGroup);
     if (!sketches.isEmpty()) box.union(sketches);
     return box.isEmpty() ? this.sceneBox() : box;

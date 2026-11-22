@@ -30,6 +30,7 @@ export function exportAptCl(path: CamToolpath): CamResult<string> {
       feed = nextFeed;
     }
     if (motion.kind === "arc") {
+      if (motion.helical) return { ok: false, errors: [`APT-CL export does not support helical motion ${index + 1}.`] };
       const normal: CamVector = motion.direction === "ccw" ? motion.normal
         : [-motion.normal[0], -motion.normal[1], -motion.normal[2]];
       const start = subtract(motion.start, motion.center);

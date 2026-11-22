@@ -1,4 +1,5 @@
 import { CAM_TOOL_COMPONENT_ROLES, type CamProcess, type CamProject, type CamToolComponentRole, type CamToolPosition } from "./model";
+import { canCut } from "./toolGeometry";
 
 export function validateOperationTooling(process: CamProcess, tools: readonly CamToolPosition[] = []): string[] {
   const errors: string[] = [];
@@ -87,6 +88,15 @@ export function isCamProject(value: unknown): value is CamProject {
     !!item && typeof item === "object" && !Array.isArray(item);
   const geometry = (item: unknown) => record(item) && typeof item.documentId === "string"
     && typeof item.entityId === "string" && (item.kind === "body" || item.kind === "sketch");
+  const positive = (item: unknown) => typeof item === "number" && Number.isFinite(item) && item > 0;
+  const anchor = (item: unknown) => item === undefined || (record(item) && Array.isArray(item.bounds)
+    && item.bounds.length === 2 && item.bounds.every(vector)
+    && positive(item.edgeCount) && Number.isInteger(item.edgeCount)
+    && positive(item.faceCount) && Number.isInteger(item.faceCount));
+  const edge = (item: unknown) => record(item) && typeof item.bodyId === "string" && anchor(item.anchor) && vector(item.mid)
+    && vector(item.tangent) && typeof item.curve === "string" && positive(item.length);
+  const floor = (item: unknown) => record(item) && typeof item.bodyId === "string" && anchor(item.anchor) && vector(item.center)
+    && vector(item.normal) && item.surface === "PLANE" && positive(item.area);
   const context = (item: unknown) => record(item) && typeof item.id === "string" && typeof item.name === "string"
     && record(item.frame) && (item.frame.kind === "legacy-world"
       || (item.frame.kind === "legacy-sketch" && (item.frame.sketch === undefined || geometry(item.frame.sketch)))
@@ -130,6 +140,10 @@ export function isCamProject(value: unknown): value is CamProject {
       && Array.isArray(item.components) && item.components.every((component) => record(component)
         && uniqueId(component.bodyId, owned) && CAM_TOOL_COMPONENT_ROLES.includes(component.role as CamToolComponentRole)
         && (component.sourceToTip === undefined || (item.placement === undefined && rigidTransform(component.sourceToTip))))
+      && (item.cuttingBodyId === undefined || item.components.some((component) =>
+        component.bodyId === item.cuttingBodyId && canCut(component.role)))
+      && (item.profileDiameter === undefined || (typeof item.profileDiameter === "number"
+        && Number.isFinite(item.profileDiameter) && item.profileDiameter > 0))
       && (item.cutting === undefined || (record(item.cutting) && item.cutting.kind === "flat-endmill"
         && typeof item.cutting.diameter === "number" && Number.isFinite(item.cutting.diameter) && item.cutting.diameter > 0));
   };
@@ -145,8 +159,29 @@ export function isCamProject(value: unknown): value is CamProject {
       && typeof item.id === "string" && typeof item.name === "string" && typeof item.setupId === "string"
       && (item.contextId === undefined || typeof item.contextId === "string")
       && (item.toolPositionId === undefined || (typeof item.toolPositionId === "string" && !!item.toolPositionId.trim()))
-      && item.kind === "profile" && (item.contour === undefined || geometry(item.contour))
+      && (item.kind === "profile" || item.kind === "pocket" || item.kind === "adaptive") && (item.contour === undefined || geometry(item.contour))
+      && [item.boundaryEdges, item.islandEdges].every((refs) => refs === undefined
+        || (Array.isArray(refs) && refs.length <= 500 && refs.every(edge)))
+      && (item.floorFace === undefined || floor(item.floorFace))
+      && (item.islandSketches === undefined || (item.kind !== "profile" && Array.isArray(item.islandSketches)
+        && item.islandSketches.every((ref) => geometry(ref) && record(ref) && ref.kind === "sketch")))
       && (item.profile === undefined || profile(item.profile))
+      && (item.contourMilling === undefined || (record(item.contourMilling)
+        && (item.contourMilling.side === "center" || item.contourMilling.side === "left" || item.contourMilling.side === "right")
+        && (item.contourMilling.direction === "forward" || item.contourMilling.direction === "reverse")
+        && typeof item.contourMilling.depth === "string" && typeof item.contourMilling.clearance === "string"
+        && [item.contourMilling.stepdown, item.contourMilling.leadIn, item.contourMilling.leadOut]
+          .every((value) => value === undefined || typeof value === "string")))
+      && (item.kind !== "profile" ? (item.profile === undefined && item.contourMilling === undefined && record(item.pocketMilling)
+        && typeof item.pocketMilling.depth === "string" && typeof item.pocketMilling.clearance === "string"
+        && typeof item.pocketMilling.stepover === "string"
+        && (item.pocketMilling.stepdown === undefined || typeof item.pocketMilling.stepdown === "string")
+        && (item.pocketMilling.entry === undefined || (item.kind === "adaptive"
+          && (item.pocketMilling.entry === "plunge" || item.pocketMilling.entry === "helix")))
+        && (item.pocketMilling.stayDown === undefined || (item.kind === "adaptive" && typeof item.pocketMilling.stayDown === "boolean"))
+        && [item.pocketMilling.helixDiameter, item.pocketMilling.rampAngle]
+          .every((value) => value === undefined || (item.kind === "adaptive" && typeof value === "string")))
+        : item.pocketMilling === undefined)
       && (item.track === undefined || (record(item.track)
         && typeof item.track.id === "string" && typeof item.track.unitId === "string")))
     && (value.processPlan === undefined || (Array.isArray(value.processPlan) && value.processPlan.every((item) =>

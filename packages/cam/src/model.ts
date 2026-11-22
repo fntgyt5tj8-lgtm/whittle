@@ -1,3 +1,4 @@
+import type { CamVector } from "./geometry/frames";
 /** A pinned CAD body. CAM assigns a separate instance ID to each insertion or copy. */
 export interface CamCadSource {
   readonly version: 1;
@@ -53,15 +54,66 @@ export interface CircularProfileSettings {
   readonly spindleRpm?: string;
 }
 
+export interface MillingDepthSettings {
+  readonly depth: string;
+  readonly clearance: string;
+  readonly stepdown?: string;
+}
+
+export interface PocketMillingSettings extends MillingDepthSettings {
+  readonly stepover: string;
+  readonly entry?: "plunge" | "helix";
+  readonly helixDiameter?: string;
+  readonly rampAngle?: string;
+  readonly stayDown?: boolean;
+}
+
+export interface ContourMillingSettings extends MillingDepthSettings {
+  readonly side: "center" | "left" | "right";
+  readonly direction: "forward" | "reverse";
+  readonly leadIn?: string;
+  readonly leadOut?: string;
+}
+
+export interface CamGeometryAnchor {
+  readonly bounds: readonly [CamVector, CamVector];
+  readonly edgeCount: number;
+  readonly faceCount: number;
+}
+
+export interface CamBoundaryEdge {
+  readonly anchor?: CamGeometryAnchor;
+  readonly bodyId: string;
+  readonly mid: CamVector;
+  readonly tangent: CamVector;
+  readonly curve: string;
+  readonly length: number;
+}
+
+export interface CamFloorFace {
+  readonly anchor?: CamGeometryAnchor;
+  readonly bodyId: string;
+  readonly center: CamVector;
+  readonly normal: CamVector;
+  readonly surface: string;
+  readonly area: number;
+}
+
 export interface CamProcess {
   readonly id: string;
   readonly name: string;
   readonly setupId: string;
-  readonly kind: "profile";
+  readonly kind: "profile" | "pocket" | "adaptive";
   readonly toolPositionId?: string;
   readonly contour?: CamGeometryRef;
+  readonly islandSketches?: readonly CamGeometryRef[];
+  readonly boundaryEdges?: readonly CamBoundaryEdge[];
+  readonly islandEdges?: readonly CamBoundaryEdge[];
+  readonly floorFace?: CamFloorFace;
   readonly contextId?: string;
   readonly profile?: CircularProfileSettings & { readonly csys?: "world" | "sketch" | `datum:${string}` };
+  readonly contourMilling?: ContourMillingSettings;
+  readonly pocketMilling?: PocketMillingSettings;
   readonly track?: { readonly unitId: string; readonly id: string };
 }
 
@@ -101,11 +153,15 @@ export interface CamToolPosition {
   readonly name: string;
   readonly components: readonly CamToolComponent[];
   readonly tipCsysId: string;
+  /** Required to disambiguate multiple cutter or insert components. */
+  readonly cuttingBodyId?: string;
   /** Legacy file input only. Converted to native TIP and component transforms on load. */
   readonly placement?: {
     readonly position: readonly [string, string, string];
     readonly rotation: readonly [string, string, string];
   };
+  /** Archived compensation from older files. Inherited dimensions drive current operations. */
+  readonly profileDiameter?: number;
   readonly cutting?: FlatEndmill;
 }
 

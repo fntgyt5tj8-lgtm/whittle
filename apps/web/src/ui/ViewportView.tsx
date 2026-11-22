@@ -541,6 +541,9 @@ export function ViewportView() {
 
   const doc = useApp((s) => s.doc);
   const regen = useApp((s) => s.regen);
+  const camContourPlayback = useApp((s) => s.camContourPlayback?.doc === s.doc
+    && s.builtDoc === s.doc && s.ribbonTab === "manufacturing" && !s.session && !s.camToolSelection
+    ? s.camContourPlayback : null);
   const camProfileSketchPicking = useApp((s) => s.camProfileSketchPicking);
   const isolatedToolId = useApp((s) => s.isolatedToolId);
   const isolatedTool = doc.manufacturing?.toolPositions?.find((tool) => tool.id === isolatedToolId);
@@ -743,8 +746,19 @@ export function ViewportView() {
     const isolated = shownTool?.components.length
       ? new Set(shownTool.components.map(({ bodyId }) => bodyId)) : undefined;
     const bodies = referenceTool && regen.pickBodies ? regen.pickBodies : regen.bodies;
-    vp.setBodies(bodies, doc.bodies, isolated);
-  }, [vp, regen, doc.bodies, referenceTool, isolatedTool]);
+    vp.setBodies(camContourPlayback ? bodies.filter((body) => !camContourPlayback.ids.includes(body.id)) : bodies,
+      doc.bodies, camContourPlayback ? undefined : isolated);
+  }, [vp, regen, doc.bodies, referenceTool, isolatedTool, camContourPlayback?.ids]);
+
+  useEffect(() => {
+    if (!vp) return;
+    const bodies = camContourPlayback ? regen?.bodies.filter((body) => camContourPlayback.ids.includes(body.id)) : [];
+    vp.setCamContour(camContourPlayback, bodies ?? [], doc.bodies);
+    vp.setCamContourProgress(useApp.getState().camContourProgress);
+    return useApp.subscribe((state, previous) => {
+      if (state.camContourProgress !== previous.camContourProgress) vp.setCamContourProgress(state.camContourProgress);
+    });
+  }, [vp, camContourPlayback, regen, doc.bodies]);
 
   useEffect(() => {
     if (isolatedToolId && !isolatedTool?.components.length) useApp.setState({ isolatedToolId: null });

@@ -43,7 +43,7 @@ it("round-trips independent tool instances and native TIPs without changing the 
   const tool: CamToolPosition = {
     id: "tool-a", number: 7, name: "Endmill", tipCsysId: tip.id,
     components: [{ bodyId: cutter.id, role: "cutter" }, { bodyId: holder.id, role: "holder" }],
-    cutting: { kind: "flat-endmill", diameter: 6 },
+    profileDiameter: 6,
   };
   const other: CamToolPosition = {
     ...tool, id: "tool-b", number: 8, tipCsysId: otherTip.id, components: [{ bodyId: spare.id, role: "insert" }],
@@ -174,4 +174,61 @@ it("migrates a legacy tool's evaluated TIP and component poses on reopen", async
   }
   current.bodies[0]!.bbox.flat().forEach((value, index) => expect(value).toBeCloseTo(old.bodies[0]!.bbox.flat()[index]!, 8));
   expect(engine.migrateCamTools(updated).tips).toEqual([]);
+});
+
+it("inherits cutting geometry only through the designated component and retains it on reopen", async () => {
+  const doc = newDocument("CAM assembly");
+  doc.parameters.push({ id: "cam-diameter", name: "CUTTER_DIAMETER", expr: "99 mm", kind: "length" });
+  async function part(name: string, type: string, diameter: string) {
+    const source = newDocument(name);
+    const body = makePrimitive(source, "cylinder");
+    if (body.type !== "primitive") throw new Error("Expected a cylinder");
+    body.radius = "CORP_DIAMETER / 2";
+    source.features.push(body);
+    source.parameters.push(
+      { id: "t", name: "TYPE", expr: type, kind: "number" },
+      { id: "d", name: "CUTTER_DIAMETER", expr: diameter, kind: "length" },
+      { id: "s", name: "CORP_DIAMETER", expr: "6 mm", kind: "length" },
+    );
+    const bytes = Uint8Array.from(serializeDocument(source));
+    const feature = makeImport(doc, `${name}.whittle`, "whittle", Buffer.from(bytes).toString("base64"));
+    feature.cadSource = { version: 1, documentId: source.id!, bodyId: body.id, revision: await cadRevision(bytes) };
+    return feature;
+  }
+  const source = await part("Microtool", "0", "1 mm");
+  const holder = await part("Holder", "5", "6 mm");
+  const collet = await part("Collet", "1", "6 mm");
+  const cutter = makeMove(doc, source.id);
+  if (cutter.type !== "move") throw new Error("Expected a native Move");
+  cutter.copy = true;
+  const tip = makeCsys(doc);
+  const tool: CamToolPosition = {
+    id: "tool", number: 1, name: "Microtool", tipCsysId: tip.id, cuttingBodyId: cutter.id,
+    profileDiameter: 6,
+    components: [
+      { bodyId: cutter.id, role: "cutter" },
+      { bodyId: holder.id, role: "holder" },
+      { bodyId: collet.id, role: "collet" },
+    ],
+  };
+  doc.features.push(source, holder, collet, cutter, tip);
+  doc.manufacturing = { ...createProject("CAM"), toolPositions: [tool] };
+  const builder = new Builder();
+  const result = (document: typeof doc) => builder.regen(document, "final").camToolCutting?.[0]?.result;
+  await builder.prepareImports(doc);
+  expect(result(doc)).toMatchObject({ ok: true, value: { type: 0, diameter: 1, shankDiameter: 6 } });
+  const reopened = deserializeCamDocument(serializeCamDocument(doc));
+  expect(reopened.manufacturing?.toolPositions?.[0]).toEqual(tool);
+  expect(result(reopened)).toEqual(result(doc));
+
+  const setTool = (cuttingBodyId: string | undefined, components: CamToolPosition["components"]) => {
+    doc.manufacturing = { ...doc.manufacturing!, toolPositions: [{ ...tool, cuttingBodyId, components }] };
+  };
+  setTool(undefined, tool.components.slice(1));
+  expect(result(doc)).toMatchObject({ ok: false, errors: [expect.stringContaining("Add a cutter or insert")] });
+  const twoCutters = [...tool.components.slice(0, 2), { bodyId: collet.id, role: "insert" as const }];
+  setTool(undefined, twoCutters);
+  expect(result(doc)).toMatchObject({ ok: false, errors: [expect.stringContaining("Select the cutting component")] });
+  setTool(collet.id, twoCutters);
+  expect(result(doc)).toMatchObject({ ok: true, value: { type: 1, family: "BALL", diameter: 6 } });
 });

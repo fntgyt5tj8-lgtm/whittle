@@ -1,0 +1,7 @@
+# Routed stay-down links
+
+FreeCAD 1.1.0 Adaptive2d recursively checks segments of a proposed link. When a segment crosses uncleared material, it probes either side of the midpoint for a cleared waypoint and tests the resulting segments. It bounds the search by time, point count, and travel length. [Pinned FreeCAD ResolveLinkPath](https://github.com/FreeCAD/FreeCAD/blob/34a9716668b1ddeb55b914f1c5be644826bdbbbf/src/Mod/CAM/libarea/Adaptive.cpp#L2215)
+
+With **Stock-aware linking** enabled, Whittle first tries its existing direct or short cutting connectors. If they fail, it insets the completed cutter sweeps by the cutter radius plus an allowance, then uses vertices of that region as candidate waypoints. A bounded shortest-path search uses only edges whose full cutter sweep is proven clear. Accepted routes emit ordinary neutral feed lines at the current depth and are counted in the preview. If the search cannot certify a route, the operation uses its configured clearance and entry. Routes are limited to three times the direct distance, plus waypoint and operation-wide search limits.
+
+This uses the existing TypeScript Clipper2 dependency and current-depth cleared-region model. The route search considers the selected cut start and a finite set of waypoints. It can retract even when a different route or seam might be possible. Earlier-operation stock, shank, holder, and fixtures remain outside this model.

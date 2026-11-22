@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
 import {
   CAM_WORLD, addProcess, addSetup, getProcessPlan, validateOperationTooling, validateProject,
-  type CamGeometryRef, type CamMachiningStage, type CamPlanItem, type CamProject, type CamSetup, type CircularProfileSettings,
+  type CamGeometryRef, type CamMachiningStage, type CamPlanItem, type CamProcess, type CamProject, type CamSetup, type CircularProfileSettings, type ContourMillingSettings, type PocketMillingSettings,
 } from "@whittle/cam";
 import type { CamCadAdapter } from "../cadAdapter";
 import { demoMachine, demoTracks, trackKey } from "../machine";
 import { uid } from "@whittle/core";
 import { SetupEditor } from "./SetupEditor";
+import { ContourMilling } from "./ContourMilling";
 import { ProfileExport } from "./ProfileExport";
 import { MillIcon } from "./icons/MillIcon";
 import { PlanIcon } from "./icons/PlanIcon";
@@ -31,7 +32,7 @@ export function useCamWorkspace(
   canPickSketch: boolean,
   startSketchPick: () => void,
 ) {
-  const [sketchPick, setSketchPick] = useState<{ documentId?: string; key?: string }>();
+  const [sketchPick, setSketchPick] = useState<{ documentId?: string; key?: string; island?: boolean }>();
   const [selection, setSelection] = useState<{ documentId?: string; key?: string }>({});
   const [contextSelection, setContextSelection] = useState<{ documentId?: string; setupId?: string; id?: string }>({});
   const selectedKey = selection.documentId === documentId ? selection.key : undefined;
@@ -80,20 +81,36 @@ export function useCamWorkspace(
   const contourName = process?.contour && cad.resolveGeometry(process.contour)?.name;
   const pickingSketch = !!process && canPickSketch && !!sketchPick
     && sketchPick.documentId === documentId && sketchPick.key === selectedKey;
-  const selectedSketchValid = !!selectedSketch && !!cad.resolveCircularProfile?.(selectedSketch);
+  const selectedSketchValid = !!selectedSketch && ((process?.contourMilling || process?.pocketMilling) ? !!cad.resolveGeometry(selectedSketch) : !!cad.resolveCircularProfile?.(selectedSketch));
 
   function changeContour(contour: CamGeometryRef | undefined) {
     if (!process) return;
     setProject((current) => ({
       ...current,
-      processes: current.processes.map((item) => item.id === process.id ? { ...item, contour } : item),
+      processes: current.processes.map((item) => item.id === process.id ? { ...item, contour, ...(contour ? { boundaryEdges: undefined } : {}) } : item),
     }), contour ? "Assign operation profile sketch" : "Remove operation profile sketch");
     setSketchPick(undefined);
   }
 
+  const pickingIsland = pickingSketch && sketchPick?.island === true;
+  const sameSketch = (a: CamGeometryRef | undefined, b: CamGeometryRef) =>
+    a?.documentId === b.documentId && a.entityId === b.entityId;
+  const duplicateIsland = pickingIsland && !!selectedSketch && (sameSketch(process?.contour, selectedSketch)
+    || process?.islandSketches?.some((island) => sameSketch(island, selectedSketch)));
+
+  function changeIslands(islandSketches: readonly CamGeometryRef[]) {
+    if (!process) return;
+    setProject((current) => ({
+      ...current,
+      processes: current.processes.map((item) => item.id === process.id ? { ...item, islandSketches } : item),
+    }), "Edit island sketches");
+    setSketchPick(undefined);
+  }
+
   useEffect(() => {
-    if (pickingSketch && selectedSketchValid) {
-      changeContour(selectedSketch);
+    if (pickingSketch && selectedSketchValid && selectedSketch && !duplicateIsland) {
+      if (pickingIsland) changeIslands([...(process?.islandSketches ?? []), selectedSketch]);
+      else changeContour(selectedSketch);
       openProperties();
     } else if (!canPickSketch && sketchPick) {
       setSketchPick(undefined);
@@ -111,6 +128,8 @@ export function useCamWorkspace(
 
   const tools = project.toolPositions ?? [];
   const operationTool = tools.find((tool) => tool.id === process?.toolPositionId);
+  const cutting = operationTool && cad.resolveToolCutting?.(operationTool.id);
+  const toolDiameter = cutting?.ok && cutting.value.family === "FLAT" ? cutting.value.diameter : undefined;
   const assignedTrack = process?.track;
   const track = assignedTrack && demoTracks.find((item) => trackKey(item) === trackKey(assignedTrack));
   const unit = track && demoMachine.executionUnits.find((item) => item.id === track.unitId);
@@ -124,15 +143,22 @@ export function useCamWorkspace(
     setSelectedKey(`setup:${id}`);
   }
 
-  function createProfile() {
+  function createProfile(mode: "profile" | "contour" | "pocket" | "adaptive" = "profile") {
     if (!setup || !context) return;
     const number = project.processes.length + 1;
-    const id = uid("profile");
+    const kind = mode === "contour" ? "profile" : mode;
+    const id = uid(kind);
+    const contourMilling: ContourMillingSettings | undefined = mode === "contour"
+      ? { side: "center", direction: "forward", depth: "", clearance: "2" } : undefined;
+    const pocketMilling: PocketMillingSettings | undefined = kind !== "profile"
+      ? { depth: "", clearance: "2", stepover: kind === "adaptive" ? "15" : "50" } : undefined;
     const contour = selectedSketch
       ?? (setup.part?.kind === "sketch" ? setup.part : undefined);
+    const name = { profile: "Profile", contour: "Contour", pocket: "Pocket", adaptive: "Adaptive" }[mode];
+    const action = { profile: "Add circular profile", contour: "Add contour milling", pocket: "Add pocket milling", adaptive: "Add adaptive clearing" }[mode];
     setProject((current) => addProcess(current, {
-      id, name: `Profile ${number}`, setupId: setup.id, contextId: context.id, kind: "profile", contour,
-    }), "Add circular profile");
+      id, name: `${name} ${number}`, setupId: setup.id, contextId: context.id, kind, contour, contourMilling, pocketMilling,
+    }), action);
     setSelectedKey(`process:${id}`);
   }
 
@@ -180,6 +206,26 @@ export function useCamWorkspace(
     }), "Edit circular profile", `cam:${process.id}:${Object.keys(settings)[0]}`);
   }
 
+  function changeModelGeometry(changes: Pick<Partial<CamProcess>, "boundaryEdges" | "islandEdges" | "floorFace">) {
+    if (!process) return;
+    setProject((current) => ({
+      ...current,
+      processes: current.processes.map((item) => item.id === process.id ? { ...item, ...changes } : item),
+    }), "Edit operation model geometry");
+  }
+
+  function changeMilling(changes: Partial<ContourMillingSettings & PocketMillingSettings>) {
+    if (!process) return;
+    const updated = process.pocketMilling
+      ? { pocketMilling: { ...process.pocketMilling, ...changes } }
+      : process.contourMilling && { contourMilling: { ...process.contourMilling, ...changes } };
+    if (!updated) return;
+    setProject((current) => ({
+      ...current,
+      processes: current.processes.map((item) => item.id === process.id ? { ...item, ...updated } : item),
+    }), process.kind === "adaptive" ? "Edit adaptive clearing" : process.pocketMilling ? "Edit pocket milling" : "Edit contour milling", `cam:${process.id}:${Object.keys(changes)[0]}`);
+  }
+
   function selectTile(key?: string) {
     setSelectedKey(key);
     openProperties();
@@ -187,20 +233,28 @@ export function useCamWorkspace(
 
   const commands = [
     { id: "setup", label: "Create setup", icon: MillIcon, enabled: true, run: createSetup },
-    { id: "profile", label: "Add profile", icon: MillIcon, enabled: !!setup && !!context, run: createProfile },
+    { id: "profile", label: "Add profile", icon: MillIcon, enabled: !!setup && !!context, run: () => createProfile() },
+    { id: "contour", label: "Add contour milling", icon: MillIcon, enabled: !!setup && !!context, run: () => createProfile("contour") },
+    { id: "pocket", label: "Add pocket milling", icon: MillIcon, enabled: !!setup && !!context, run: () => createProfile("pocket") },
+    { id: "adaptive", label: "Add adaptive clearing", icon: MillIcon, enabled: !!setup && !!context, run: () => createProfile("adaptive") },
   ];
+  const millingSettings = process?.pocketMilling ?? process?.contourMilling;
   const selectedStage = selectedItem && selectedItem.kind !== "process" ? selectedItem : undefined;
   const errors = [...validateProject(project), ...sourceErrors];
   const datums = cad.getCoordinateSystems();
   for (const item of project.processes) {
     if (item.contour && !cad.resolveGeometry(item.contour)) errors.push(`${item.name} references a missing profile sketch.`);
   }
+  const contextErrors = () => (context?.bodies ?? []).flatMap(({ body, role }) =>
+    cad.resolveGeometry(body) ? [] : [`The ${role} body (${body.entityId}) is unavailable.`]);
+  const referenceErrors = () => [...(process ? validateOperationTooling(process, tools) : []), ...contextErrors()];
   const operationErrors = () => [
-    ...(process ? validateOperationTooling(process, tools) : []),
+    ...referenceErrors(),
     ...(operationTool && !cad.resolveCoordinateSystem(operationTool.tipCsysId) ? ["Resolve the selected tool's TIP before exporting."] : []),
-    ...(operationTool && !operationTool.cutting ? ["Define the selected tool's cutting diameter before exporting."] : []),
-    ...(context?.bodies ?? []).flatMap(({ body, role }) =>
-      cad.resolveGeometry(body) ? [] : [`The ${role} body (${body.entityId}) is unavailable.`]),
+    ...(operationTool && toolDiameter === undefined
+      ? cutting?.ok ? ["Circular profile export requires a FLAT cutter."]
+        : cutting?.errors ?? ["The selected cutting component is unavailable."]
+      : []),
   ];
   for (const item of project.setups.flatMap((item) => item.contexts ?? [])) {
     if (item.frame.kind === "native" && item.frame.csysId) {
@@ -270,26 +324,47 @@ export function useCamWorkspace(
       </dl>
       {process && <>
         <dl>
-          <dt>Profile sketch</dt>
-          <dd>{contourName ?? (process.contour ? "Unavailable" : "Unassigned")}</dd>
+          <dt>{process.boundaryEdges?.length ? "Boundary geometry" : process.pocketMilling ? "Pocket boundary sketch" : process.contourMilling ? "Contour sketch" : "Profile sketch"}</dt>
+          <dd>{process.boundaryEdges?.length ? "Selected model edges" : contourName ?? (process.contour ? "Unavailable" : "Unassigned")}</dd>
         </dl>
         <div className="cam-properties__actions">
-          <button type="button" aria-pressed={pickingSketch} onClick={() => {
-            if (pickingSketch) setSketchPick(undefined);
+          <button type="button" aria-pressed={pickingSketch && !pickingIsland} onClick={() => {
+            if (pickingSketch && !pickingIsland) setSketchPick(undefined);
             else {
               startSketchPick();
               setSketchPick({ documentId, key: selectedKey });
             }
-          }}>{pickingSketch ? "Cancel Sketch Pick" : process.contour ? "Replace Sketch" : "Pick Sketch"}</button>
+          }}>{pickingSketch && !pickingIsland ? "Cancel Sketch Pick" : process.contour ? "Replace Sketch" : "Pick Sketch"}</button>
           {process.contour && <button type="button" onClick={() => changeContour(undefined)}>Remove Sketch</button>}
         </div>
-        {pickingSketch && <p role="status">{selectedSketch && !selectedSketchValid
-          ? "Choose a built sketch with one circle."
+        {process.pocketMilling && (process.contour || process.boundaryEdges?.length) ? <>
+          <ul aria-label="Island sketches">
+            {(process.islandSketches ?? []).map((ref, index) => {
+              const name = cad.resolveGeometry(ref)?.name ?? "Unavailable sketch";
+              return <li key={JSON.stringify([ref.documentId, ref.entityId])}>{name}{" "}
+                <button type="button" aria-label={`Remove island ${name}`}
+                  onClick={() => changeIslands((process.islandSketches ?? []).filter((_, i) => i !== index))}>Remove</button>
+              </li>;
+            })}
+          </ul>
+          <button type="button" aria-pressed={pickingIsland} onClick={() => {
+            if (pickingIsland) setSketchPick(undefined);
+            else {
+              startSketchPick();
+              setSketchPick({ documentId, key: selectedKey, island: true });
+            }
+          }}>{pickingIsland ? "Cancel Island Pick" : "Add Island Sketch"}</button>
+        </> : null}
+        {pickingSketch && <p role="status">{duplicateIsland ? "Choose a different sketch for the island." : selectedSketch && !selectedSketchValid
+          ? (millingSettings ? "Choose a native sketch." : "Choose a built sketch with one circle.")
           : "Click a sketch in the 3D view or Browser."}</p>}
       </>}
-      {process && <ProfileExport key={`${documentId}/${process.id}/${process.contour?.entityId ?? ""}/${process.toolPositionId ?? ""}/${operationTool?.cutting?.diameter ?? ""}`}
+      {process && millingSettings && canPickSketch && !pickingSketch && <ContourMilling
+        key={`${documentId}/${process.id}`} cad={cad} process={process} settings={millingSettings}
+        tool={operationTool} resolveFrame={resolveFrame} validateReferences={referenceErrors} onChange={changeMilling} onGeometryChange={changeModelGeometry} />}
+      {process && !millingSettings && <ProfileExport key={`${documentId}/${process.id}/${process.contour?.entityId ?? ""}/${process.toolPositionId ?? ""}/${toolDiameter ?? ""}`}
         name={process.id} settings={process.profile} onChange={changeProfile} resolveFrame={resolveFrame} validateReferences={operationErrors}
-        hasContour={!!process.contour} hasTool={process.toolPositionId !== undefined} toolDiameter={operationTool?.cutting?.diameter}
+        hasContour={!!process.contour} hasTool={process.toolPositionId !== undefined} toolDiameter={toolDiameter}
         resolve={() => process.contour && cad.resolveCircularProfile?.(process.contour)} />}
       {setup && !selectedItem && <SetupEditor key={`${documentId}/${setup.id}`}
         setup={setup} cad={cad} edit={editSetup} select={selectContext} removeContext={removeContext}

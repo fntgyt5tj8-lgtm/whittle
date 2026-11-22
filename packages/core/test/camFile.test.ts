@@ -2,7 +2,7 @@ import { strToU8, unzipSync, zipSync } from "fflate";
 import { describe, expect, it } from "vitest";
 import { createProject } from "@whittle/cam";
 import {
-  copyLegacyManufacturing, deserializeCamDocument, deserializeDocument, makeImport, makePrimitive,
+  copyLegacyManufacturing, deserializeCamDocument, deserializeDocument, makeCsys, makeImport, makePrimitive,
   newDocument, serializeCamDocument, serializeDocument,
 } from "@whittle/core";
 
@@ -25,6 +25,25 @@ describe("independent Manufacturing documents", () => {
     expect(deserializeDocument(cadBytes).manufacturing).toBeUndefined();
     members["manifest.json"] = strToU8(JSON.stringify({ format: "whittle-cam", schema: 2 }));
     expect(() => deserializeCamDocument(zipSync(members))).toThrow(/Unsupported CAM document format/);
+  });
+
+  it("migrates a diameter-only tool on open without inventing a sketch or a geometry family", () => {
+    const doc = newDocument("Old tool");
+    const body = makeImport(doc, "tool.obj", "obj", btoa("geometry"));
+    const tip = makeCsys(doc);
+    doc.features.push(body, tip);
+    const tool = { id: "tool", number: 1, name: "Legacy", tipCsysId: tip.id,
+      components: [{ role: "cutter" as const, bodyId: body.id }] };
+    doc.manufacturing = { ...createProject("Old tool"), toolPositions: [tool] };
+    const members = unzipSync(serializeCamDocument(doc));
+    members["manufacturing.json"] = strToU8(JSON.stringify({
+      ...doc.manufacturing, toolPositions: [{ ...tool, cutting: { kind: "flat-endmill", diameter: 4.25 },
+        components: [{ ...tool.components[0], geometry: { kind: "revolved", sketchId: "old-sketch" } }] }],
+    }));
+    const opened = deserializeCamDocument(zipSync(members));
+    const migrated = opened.manufacturing!.toolPositions![0]!;
+    expect(migrated).toEqual({ ...tool, profileDiameter: 4.25 });
+    expect(deserializeCamDocument(serializeCamDocument(opened)).manufacturing).toEqual(opened.manufacturing);
   });
 
   it("copies a legacy project, rebases local references and preserves the original CAD", () => {

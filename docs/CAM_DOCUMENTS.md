@@ -15,3 +15,26 @@ CAM can reopen offline using the pinned snapshot. On the web, inserting and chec
 ## Legacy migration
 
 Open the legacy `.whittle` design, then select **Migrate Embedded Manufacturing** in Manufacturing. Use **Save CAM** to write the new document. Migration copies the geometry timeline and project, rebases local references to the new CAM document and preserves entity IDs and contextual settings. The original CAD file retains its embedded project as the migration source.
+
+## Inherited cutting parameters
+
+Each tool position has a native **TIP** coordinate system and stable CAM body instance IDs. TIP controls the placement of the physical assembly. The complete CAD bodies remain available for visualization and future collision checking.
+
+Assign the **cutter** or **insert** role to the cutting part. A sole cutter or insert is selected automatically. If there are several, choose the **Cutting component** in the tool position. Holders, collets, adapters and other roles remain noncutting even when their source declares `TYPE`.
+
+CAM resolves the designated component to its validated, pinned native `.whittle` source, including through Move / Copy. It evaluates the source part’s document-level parameters using native expressions and units. Each source file supplies one parameter set, including when it contains several bodies. Use a separate native part file for each distinct parameter set. Parameter names are case-insensitive for inheritance and must resolve uniquely.
+
+| TYPE | Cutting family |
+| --- | --- |
+| 0 | FLAT |
+| 1 | BALL |
+| 2 | TOROIDAL |
+| 3 | LOLLIPOP |
+| 4 | CONICAL |
+| 5 | FORM |
+
+`TYPE` must be a dimensionless integer. A missing, invalid or unknown value leaves the cutting definition unavailable and blocks export for operations assigned to that tool. `CUTTER_DIAMETER` is required and supplies the nominal cutting diameter. `CUTTER_LENGTH`, `FLUTE_LENGTH` and `CORP_DIAMETER` (shank diameter) are optional. Declared dimensions must evaluate to positive lengths. Dimensionless lengths are interpreted in the source document's length unit. The Tools properties show resolved values in millimetres.
+
+Circular-profile APT-CL uses the inherited nominal diameter of a FLAT cutter. The other five families are identified by their parameters for future strategies. Operation-specific contact diameter and height for conical and form tools, collision checking, and material removal simulation are deferred.
+
+When older CAM files open, obsolete component profile definitions are dropped and any manual compensation diameter is retained as legacy data. Native sketches, parameters, bodies, component IDs and TIPs are kept. A tool whose original part lacks the required parameters needs a pinned native part with valid `TYPE` and `CUTTER_DIAMETER` before it can drive an assigned operation. Update the parameters in the source part and insert that revision in CAM to use it.

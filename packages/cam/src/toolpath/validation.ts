@@ -32,12 +32,18 @@ export function validateToolpath(path: CamToolpath): string[] {
       const start = subtract(motion.start, motion.center);
       const end = subtract(motion.end, motion.center);
       const radius = Math.hypot(...start);
-      const endRadius = Math.hypot(...end);
+      const axial = dot(end, motion.normal);
+      const radialEnd = end.map((v, i) => v - axial * motion.normal[i]!);
+      const endRadius = Math.hypot(...radialEnd);
+      const planarChord = Math.hypot(...radialEnd.map((v, i) => v - start[i]!));
       if (!finite(motion.center) || !isUnit(motion.normal) ||
           !Number.isFinite(radius) || !Number.isFinite(endRadius) || radius <= CAM_LENGTH_TOLERANCE ||
           Math.abs(radius - endRadius) > CAM_LENGTH_TOLERANCE ||
           Math.abs(dot(start, motion.normal)) > CAM_LENGTH_TOLERANCE ||
-          Math.abs(dot(end, motion.normal)) > CAM_LENGTH_TOLERANCE ||
+          (motion.helical === true
+            ? Math.abs(axial) <= CAM_LENGTH_TOLERANCE || planarChord <= CAM_LENGTH_TOLERANCE
+              || Math.abs(dot(motion.normal, motion.toolAxis)) < 1 - 1e-9
+            : motion.helical !== undefined || Math.abs(axial) > CAM_LENGTH_TOLERANCE) ||
           (motion.direction !== "cw" && motion.direction !== "ccw")) {
         errors.push(`${label} has invalid arc geometry.`);
       }

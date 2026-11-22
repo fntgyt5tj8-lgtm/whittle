@@ -1,4 +1,6 @@
 export { CAM_TOOL_COMPONENT_ROLES } from "./model";
+export { canCut, cuttingComponent, cuttingToolType, CUTTING_TOOL_TYPES } from "./toolGeometry";
+export type { CamCuttingGeometry, CuttingToolType } from "./toolGeometry";
 export type { CamToolComponent, CamToolComponentRole, CamToolPosition, CamToolSourceTransform } from "./model";
 export type { CamBodyRole, CamCadSource, CamContextFrame, CamGeometryRef, CamWorkpieceContext, CamMachiningStage, CamPlanItem, CamPlanStage, CamProcess, CamProject, CamResult, CamSetup, CircularProfileSettings, FlatEndmill } from "./model";
 export { addPlanStage, addProcess, addSetup, createProject, getProcessPlan, migrateWorkpieceContexts } from "./operations";
@@ -11,3 +13,11 @@ export type { CircularProfile, CircularProfileAlgorithm } from "./algorithms/cir
 export type { CamMotion, CamToolpath } from "./toolpath/model";
 export { validateToolpath } from "./toolpath/validation";
 export { exportAptCl } from "./export/apt";
+export type { ContourMillingSettings } from "./model";
+export { generateContour } from "./algorithms/contour";
+export type { ContourCurve, ContourPoint, ContourPreview } from "./algorithms/contour";
+export type { PocketMillingSettings } from "./model";
+export { generatePocket } from "./algorithms/pocket";
+export { generateAdaptive } from "./algorithms/adaptive";
+export { pocketBoundaries } from "./algorithms/pocketRegions";
+export type { CamBoundaryEdge, CamFloorFace, CamGeometryAnchor } from "./model";

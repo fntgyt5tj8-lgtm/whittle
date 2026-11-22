@@ -1,5 +1,6 @@
 import { validCamToolGeometry } from "./camTools";
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate";
+import { migrateToolGeometry } from "../../cam/src/toolGeometry";
 import { migrateWorkpieceContexts } from "../../cam/src/operations";
 import { isCamProject } from "../../cam/src/validation";
 import { uid } from "./factory";
@@ -18,7 +19,7 @@ export function serializeCamDocument(doc: WhittleDocument): Uint8Array {
   const { manufacturing, ...geometry } = doc;
   if (!manufacturing || !isCamProject(manufacturing)) throw new FileFormatError("The CAM project is missing or invalid.");
   if (!validCamToolGeometry(doc)) throw new FileFormatError("A tool position has damaged component or TIP ownership.");
-  const projectBytes = strToU8(JSON.stringify(manufacturing));
+  const projectBytes = strToU8(JSON.stringify(migrateToolGeometry(manufacturing)));
   const geometryBytes = serializeDocument(geometry);
   if (projectBytes.length > MAX_PROJECT_BYTES || geometryBytes.length > MAX_GEOMETRY_BYTES) {
     throw new FileFormatError("The CAM document is too large to save.");
@@ -46,7 +47,7 @@ export function deserializeCamDocument(bytes: Uint8Array): WhittleDocument {
     if (!isCamProject(project)) throw new FileFormatError("The CAM project is damaged or uses an unsupported version.");
     const geometry = deserializeDocument(files["geometry.whittle"]!);
     if (geometry.manufacturing) throw new FileFormatError("The CAM geometry contains embedded manufacturing data.");
-    const doc = { ...geometry, manufacturing: migrateWorkpieceContexts(project) };
+    const doc = { ...geometry, manufacturing: migrateToolGeometry(migrateWorkpieceContexts(project)) };
     if (!validCamToolGeometry(doc)) throw new FileFormatError("A tool position has damaged component or TIP ownership.");
     return doc;
   } catch (e) {
@@ -59,7 +60,7 @@ export function deserializeCamDocument(bytes: Uint8Array): WhittleDocument {
 export function copyLegacyManufacturing(source: WhittleDocument, documentId = uid("cam")): WhittleDocument {
   if (!source.manufacturing) throw new FileFormatError("This design has no embedded Manufacturing project.");
   const doc = structuredClone(source);
-  const project = migrateWorkpieceContexts(doc.manufacturing!);
+  const project = migrateToolGeometry(migrateWorkpieceContexts(doc.manufacturing!));
   const rebase = <T extends { readonly documentId: string }>(ref: T): T =>
     ref.documentId === source.id ? { ...ref, documentId } : ref;
   doc.id = documentId;
@@ -75,7 +76,10 @@ export function copyLegacyManufacturing(source: WhittleDocument, documentId = ui
         bodies: context.bodies.map((assignment) => ({ ...assignment, body: rebase(assignment.body) })),
       })),
     })),
-    processes: project.processes.map((process) => ({ ...process, contour: process.contour && rebase(process.contour) })),
+    processes: project.processes.map((process) => ({
+      ...process, contour: process.contour && rebase(process.contour),
+      islandSketches: process.islandSketches?.map(rebase),
+    })),
   };
   return doc;
 }

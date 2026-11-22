@@ -8,6 +8,7 @@
  *   imports/<id>.bin  an embedded STEP/STL/Whittle file as raw bytes (inside the document it is base64, 4/3 the size)
  */
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate";
+import { migrateToolGeometry } from "../../cam/src/toolGeometry";
 import { migrateWorkpieceContexts } from "../../cam/src/operations";
 import { isCamProject } from "../../cam/src/validation";
 import { SCHEMA_VERSION, type WhittleDocument } from "./model";
@@ -210,7 +211,7 @@ export function migrate(input: unknown, fallbackId?: string): WhittleDocument {
     throw new FileFormatError("The document’s manufacturing data is damaged or uses an unsupported version.");
   }
   const d = doc as unknown as WhittleDocument;
-  if (d.manufacturing) d.manufacturing = migrateWorkpieceContexts(d.manufacturing);
+  if (d.manufacturing) d.manufacturing = migrateToolGeometry(migrateWorkpieceContexts(d.manufacturing));
   d.schema = SCHEMA_VERSION;
   d.parameters ??= [];
   d.features ??= [];
