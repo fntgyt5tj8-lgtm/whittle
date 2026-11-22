@@ -52,6 +52,23 @@ describe("portable circular profile", () => {
     ].join("\n") });
   });
 
+  it("formats decimal coordinates and equal arc radii without roundoff tails", () => {
+    const apt = exportAptCl(path({
+      geometry: { center: [-35, 25], radius: 12.63, operationFrame: CAM_WORLD },
+      tool: { kind: "flat-endmill", diameter: 2 },
+      side: "inside", depth: 1, clearance: 1, feed: 80, plungeFeed: 80,
+    }));
+    expect(apt).toEqual({ ok: true, value: [
+      "UNITS/MM", "MULTAX/ON", "CUTTER/2", "FROM/-23.37,25,1,0,0,1", "FEDRAT/80,MMPM",
+      "GOTO/-23.37,25,-1,0,0,1",
+      "CIRCLE/-35,25,-1,0,0,1,11.63", "GOTO/-35,36.63,-1,0,0,1",
+      "CIRCLE/-35,25,-1,0,0,1,11.63", "GOTO/-46.63,25,-1,0,0,1",
+      "CIRCLE/-35,25,-1,0,0,1,11.63", "GOTO/-35,13.37,-1,0,0,1",
+      "CIRCLE/-35,25,-1,0,0,1,11.63", "GOTO/-23.37,25,-1,0,0,1",
+      "RAPID", "GOTO/-23.37,25,1,0,0,1", "FINI", "",
+    ].join("\n") });
+  });
+
   it("rejects invalid frames, infeasible inside offsets and nonfinite inputs in stable order", () => {
     expect(generateCircularProfile({
       ...input, side: "inside", tool: { kind: "flat-endmill", diameter: 16 },

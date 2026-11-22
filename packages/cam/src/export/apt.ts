@@ -4,7 +4,8 @@ import type { CamResult } from "../model";
 import type { CamToolpath } from "../toolpath/model";
 
 function fields(...values: number[]) {
-  return values.map((value) => String(Object.is(value, -0) ? 0 : value)).join(",");
+  // Suppress floating-point roundoff in CL text while retaining significant digits at small scales.
+  return values.map((value) => String(Number(value.toPrecision(15)))).join(",");
 }
 
 /**
