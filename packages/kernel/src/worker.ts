@@ -94,6 +94,10 @@ async function handle(req: KernelRequest) {
       }
       for (const s of r.sketches) if (s.fill) transfer.push(s.fill.buffer);
       post({ type: "regen", result: { ...r, seq: req.seq } }, transfer);
+    } else if (req.type === "migrate-cam-tools") {
+      const migration = new Builder();
+      await migration.prepareImports(req.doc);
+      post({ type: "migrate-cam-tools", seq: req.seq, result: migration.migrateCamTools(req.doc) });
     } else if (req.type === "inspect" && req.kind === "text") {
       post({ type: "inspect", seq: req.seq, result: { kind: "text", items: textOutlines(req.doc) } });
     } else if (req.type === "inspect") {

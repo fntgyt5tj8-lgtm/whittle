@@ -546,6 +546,8 @@ export function ViewportView() {
   const isolatedTool = doc.manufacturing?.toolPositions?.find((tool) => tool.id === isolatedToolId);
   const mode = useApp((s) => s.mode);
   const session = useApp((s) => s.session);
+  const referenceTool = session?.csysInput
+    ? doc.manufacturing?.toolPositions?.find((tool) => tool.tipCsysId === session.featureId) : undefined;
   const selection = useApp((s) => s.selection);
   const hover = useApp((s) => s.hover);
   const theme = useApp((s) => s.theme);
@@ -737,10 +739,12 @@ export function ViewportView() {
   // Bodies.
   useEffect(() => {
     if (!vp || !regen) return;
-    const isolated = isolatedTool?.components.length
-      ? new Set(isolatedTool.components.map(({ bodyId }) => bodyId)) : undefined;
-    vp.setBodies(regen.bodies, doc.bodies, isolated);
-  }, [vp, regen, doc.bodies, isolatedTool?.components]);
+    const shownTool = referenceTool ?? isolatedTool;
+    const isolated = shownTool?.components.length
+      ? new Set(shownTool.components.map(({ bodyId }) => bodyId)) : undefined;
+    const bodies = referenceTool && regen.pickBodies ? regen.pickBodies : regen.bodies;
+    vp.setBodies(bodies, doc.bodies, isolated);
+  }, [vp, regen, doc.bodies, referenceTool, isolatedTool]);
 
   useEffect(() => {
     if (isolatedToolId && !isolatedTool?.components.length) useApp.setState({ isolatedToolId: null });
@@ -761,12 +765,12 @@ export function ViewportView() {
     return t === "fillet" || t === "chamfer";
   });
   useEffect(() => {
-    const pickBodies = isolatedTool?.components.length
+    const pickBodies = !referenceTool && isolatedTool?.components.length
       ? regen?.pickBodies?.filter((body) => isolatedTool.components.some(({ bodyId }) => bodyId === body.id))
       : regen?.pickBodies;
     vp?.setPickBodies(pickBodies, !edgeEdit);
     vp?.setGhost(session ? regen?.ghost : undefined, regen?.ghostOp);
-  }, [vp, regen, session, edgeEdit, isolatedTool?.components]);
+  }, [vp, regen, session, edgeEdit, isolatedTool?.components, referenceTool]);
 
   // Initial framing once the first model arrives; re-frame after inserting parts.
   const framed = useRef(false);

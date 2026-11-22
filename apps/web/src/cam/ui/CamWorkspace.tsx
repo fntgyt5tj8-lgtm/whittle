@@ -197,6 +197,7 @@ export function useCamWorkspace(
   }
   const operationErrors = () => [
     ...(process ? validateOperationTooling(process, tools) : []),
+    ...(operationTool && !cad.resolveCoordinateSystem(operationTool.tipCsysId) ? ["Resolve the selected tool's TIP before exporting."] : []),
     ...(operationTool && !operationTool.cutting ? ["Define the selected tool's cutting diameter before exporting."] : []),
     ...(context?.bodies ?? []).flatMap(({ body, role }) =>
       cad.resolveGeometry(body) ? [] : [`The ${role} body (${body.entityId}) is unavailable.`]),

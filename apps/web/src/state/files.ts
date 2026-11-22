@@ -200,6 +200,7 @@ export function loadDocument(doc: WhittleDocument, fileName: string | null) {
 /** Load a template or recovered work, asking first if the current design has unsaved changes. */
 export async function loadDocumentConfirm(doc: WhittleDocument, fileName: string | null, unsaved = false, kind: "cad" | "cam" = "cad"): Promise<boolean> {
   if (!(await confirmDiscard())) return false;
+  if (kind === "cam") doc = await migrateToolFrames(doc);
   if (!show(doc, fileName, { kind: "none" }, kind)) return false;
   if (unsaved) useApp.setState({ dirty: true }); // recovered work has not been saved to a file
   return true;
@@ -211,24 +212,38 @@ export async function newCamDocument() {
   show({ ...doc, manufacturing: createProject(doc.name) }, null, { kind: "none" }, "cam");
 }
 
-export function migrateLegacyCam() {
+export async function migrateLegacyCam() {
   const { doc, documentKind } = useApp.getState();
   if (saving || documentKind !== "cad" || !doc.manufacturing) return;
   if (useApp.getState().dirty) {
     toast("warn", "Save your CAD changes before migrating embedded Manufacturing.");
     return;
   }
-  show(copyLegacyManufacturing(doc), null, { kind: "none" }, "cam");
-  useApp.setState({ dirty: true });
-  toast("info", "Manufacturing copied to a new CAM document. Use Save CAM to keep it.");
+  try {
+    const migrated = await migrateToolFrames(copyLegacyManufacturing(doc));
+    if (useApp.getState().doc !== doc || !show(migrated, null, { kind: "none" }, "cam")) return;
+    useApp.setState({ dirty: true });
+    toast("info", "Manufacturing copied to a new CAM document. Use Save CAM to keep it.");
+  } catch (e) {
+    toast("error", errText(e, "Couldn't migrate Manufacturing."));
+  }
 }
 
 function fileKind(name: string): "cad" | "cam" {
   return name.toLowerCase().endsWith(CAM_EXTENSION) ? "cam" : "cad";
 }
 
-function showOpened(bytes: Uint8Array, name: string, loc: DocLocation, kind = fileKind(name)) {
-  const doc = kind === "cam" ? deserializeCamDocument(bytes) : deserializeDocument(bytes);
+async function migrateToolFrames(doc: WhittleDocument): Promise<WhittleDocument> {
+  if (!doc.manufacturing?.toolPositions?.some((tool) => tool.placement)) return doc;
+  const { manufacturing, tips } = await withTask("Updating tool TIP placements…", () => getKernel().migrateCamTools(doc));
+  const byId = new Map(tips.map((tip) => [tip.id, tip]));
+  return { ...doc, manufacturing, features: doc.features.map((feature) => byId.get(feature.id) ?? feature) };
+}
+
+async function showOpened(bytes: Uint8Array, name: string, loc: DocLocation, kind = fileKind(name)) {
+  const current = useApp.getState().doc;
+  const doc = kind === "cam" ? await migrateToolFrames(deserializeCamDocument(bytes)) : deserializeDocument(bytes);
+  if (useApp.getState().doc !== current) throw new Error("The active document changed. Open the file again.");
   if (!show(doc, name, loc, kind)) return;
   toast("ok", `Opened ${name}`);
   if (kind === "cad" && doc.manufacturing) {
@@ -240,9 +255,9 @@ function showOpened(bytes: Uint8Array, name: string, loc: DocLocation, kind = fi
 export async function openCamDocument() {
   if (!(await confirmDiscard())) return;
   const current = useApp.getState().doc;
-  function open(bytes: Uint8Array, name: string, loc: DocLocation) {
+  async function open(bytes: Uint8Array, name: string, loc: DocLocation) {
     if (useApp.getState().doc !== current) throw new Error("The active document changed. Open the CAM file again.");
-    showOpened(bytes, name, loc, "cam");
+    await showOpened(bytes, name, loc, "cam");
   }
   try {
     if (tauri()) {
@@ -250,13 +265,13 @@ export async function openCamDocument() {
       if (!path) return;
       if (fileKind(path) !== "cam") throw new Error("Choose a .cam document.");
       const name = path.split(/[\\/]/).pop() ?? path;
-      open(await desktopRead(path), name, { kind: "path", path });
+      await open(await desktopRead(path), name, { kind: "path", path });
       return;
     }
     const [handle] = w.showOpenFilePicker ? await w.showOpenFilePicker({ types: CAM_PICKER_TYPES, multiple: false }) : [];
     const file: File = handle ? await handle.getFile() : await pickFileFallback(CAM_EXTENSION);
     if (fileKind(file.name) !== "cam") throw new Error("Choose a .cam document.");
-    open(new Uint8Array(await file.arrayBuffer()), file.name, handle ? { kind: "handle", handle } : { kind: "none" });
+    await open(new Uint8Array(await file.arrayBuffer()), file.name, handle ? { kind: "handle", handle } : { kind: "none" });
   } catch (e) {
     if (!isAbort(e)) toast("error", errText(e, "Couldn't open that CAM document."));
   }
@@ -327,7 +342,7 @@ export async function openPath(path: string, confirm = true) {
   if (confirm && !(await confirmDiscard())) return;
   try {
     const name = path.split(/[\\/]/).pop() ?? path;
-    showOpened(await desktopRead(path), name, { kind: "path", path });
+    await showOpened(await desktopRead(path), name, { kind: "path", path });
   } catch (e) {
     toast("error", errText(e, "Couldn't open that file."));
   }
@@ -356,7 +371,7 @@ export async function openLaunchedFile(handle: FileHandle) {
   if (!(await confirmDiscard())) return;
   try {
     const file: File = await handle.getFile();
-    showOpened(new Uint8Array(await file.arrayBuffer()), file.name, { kind: "handle", handle });
+    await showOpened(new Uint8Array(await file.arrayBuffer()), file.name, { kind: "handle", handle });
   } catch (e) {
     toast("error", errText(e, "Couldn't open that file."));
   }
@@ -386,7 +401,7 @@ export async function openDroppedFile(file: File) {
   }
   if (!(await confirmDiscard())) return;
   try {
-    showOpened(new Uint8Array(await file.arrayBuffer()), file.name, { kind: "none" });
+    await showOpened(new Uint8Array(await file.arrayBuffer()), file.name, { kind: "none" });
   } catch (e) {
     toast("error", errText(e, "Couldn't open that file."));
   }

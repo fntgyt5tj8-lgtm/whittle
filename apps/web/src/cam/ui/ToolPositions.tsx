@@ -1,7 +1,7 @@
 import { castDraft } from "immer";
 import { CAM_TOOL_COMPONENT_ROLES, type CamToolComponentRole, type CamToolPosition } from "@whittle/cam";
 import {
-  activeEnd, bodyIdsBefore, documentEvaluator, type MoveFeature, makeCsys, makeMove, removeCamToolGeometry, toolForBody, uid,
+  activeEnd, bodyIdsBefore, type MoveFeature, makeCsys, makeMove, removeCamToolGeometry, toolForBody, uid,
 } from "@whittle/core";
 import { useState } from "react";
 import { addToolComponentFeatures, importModel, startMove } from "../../state/actions";
@@ -20,7 +20,6 @@ function addTool() {
   const tip = { ...makeCsys(doc), name: "TIP" };
   const tool: CamToolPosition = {
     id: uid("tool"), number, name: "Tool", tipCsysId: tip.id, components: [],
-    placement: { position: ["0", "0", "0"], rotation: ["0", "0", "0"] },
   };
   mutate("Add tool position", (draft) => {
     draft.manufacturing = castDraft({ ...project, toolPositions: [...positions, tool] });
@@ -46,13 +45,29 @@ function copyBodyIntoTool(id: string, role: CamToolComponentRole, bodyId = selec
   const { doc } = useApp.getState();
   const tool = doc.manufacturing?.toolPositions?.find((item) => item.id === id);
   if (!tool) return;
-  const source = findFeature(doc, bodyId, "import");
+  const original = tool.components.find((component) => component.bodyId === bodyId);
+  const seed = findFeature(doc, bodyId);
   const name = doc.bodies[bodyId]?.name ?? "Component";
-  if (source) {
-    const copy = { ...source, id: uid("im"), name };
+  if (seed?.type === "import" || (original && seed?.type === "move" && seed.copy)) {
+    const copy = { ...seed, id: uid(seed.type === "import" ? "im" : "mv"), name };
+    const tipIndex = doc.features.findIndex((feature) => feature.id === tool.tipCsysId);
+    const localMoves: MoveFeature[] = [];
+    const sourceMoves: MoveFeature[] = [];
+    if (original) {
+      doc.features.slice(0, activeEnd(doc)).forEach((feature, index) => {
+        if (feature.type !== "move" || feature.copy || feature.bodyId !== bodyId) return;
+        const move = { ...feature, id: uid("mv"), bodyId: copy.id };
+        (index < tipIndex ? sourceMoves : localMoves).push(move);
+      });
+    }
     mutate("Add component body", (d) => {
       d.bodies[copy.id] = { name, color: doc.bodies[bodyId]?.color ?? "#afbdcd", visible: true };
-      addToolComponentFeatures(d, { id, role }, [copy]);
+      addToolComponentFeatures(d, { id, role, sourceToTip: original?.sourceToTip }, [copy]);
+      const tipAt = d.features.findIndex((feature) => feature.id === tool.tipCsysId);
+      d.features.splice(tipAt, 0, ...sourceMoves);
+      if (d.rollback !== null) d.rollback += sourceMoves.length;
+      d.features.splice(activeEnd(d), 0, ...localMoves);
+      if (d.rollback !== null) d.rollback += localMoves.length;
     });
     return;
   }
@@ -105,6 +120,11 @@ function ToolPositionRow({ tool }: { tool: CamToolPosition }) {
         }}><span className="tree__name">{toolLabel(tool)}</span></button>
       </div>
       {expanded && <div className="cam-tool__children">
+        <button className={`tree__row ${selected?.kind === "tip" && selected.tipId === tool.tipCsysId ? "is-selected" : ""}`}
+          disabled={!active} type="button" aria-pressed={selected?.kind === "tip" && selected.tipId === tool.tipCsysId}
+          onClick={() => selectTool({ kind: "tip", toolId: tool.id, tipId: tool.tipCsysId })}>
+          <Icon name="origin" size={16} /><span className="tree__name">TIP</span>
+        </button>
         {tool.components.map(({ bodyId }) => {
           const isSelected = selected?.kind === "component" && selected.bodyId === bodyId;
           return (
@@ -114,11 +134,7 @@ function ToolPositionRow({ tool }: { tool: CamToolPosition }) {
             </button>
           );
         })}
-        <button className={`tree__row ${selected?.kind === "tip" && selected.tipId === tool.tipCsysId ? "is-selected" : ""}`}
-          disabled={!active} type="button" aria-pressed={selected?.kind === "tip" && selected.tipId === tool.tipCsysId}
-          onClick={() => selectTool({ kind: "tip", toolId: tool.id, tipId: tool.tipCsysId })}>
-          <Icon name="origin" size={16} /><span className="tree__name">TIP</span>
-        </button>
+
       </div>}
     </div>
   );
@@ -170,33 +186,8 @@ function PositionProperties({ tool }: { tool: CamToolPosition }) {
         <button type="button" className="btn btn--small" disabled={!active || !selectedBody}
           onClick={() => copyBodyIntoTool(tool.id, role)}>Add selected body</button>
       </div>
-      <details className="cam-tool__placement">
-        <summary>Move tool</summary>
-        {(["position", "rotation"] as const).map((field) => (
-          <fieldset key={field}>
-            <legend>{field === "position" ? `Translation (${doc.units})` : "Rotation (degrees)"}</legend>
-            <div className="cam-tool__axes">
-              {(["X", "Y", "Z"] as const).map((axis, index) => (
-                <label key={axis}>{axis}<DeferredInput className="input input--small"
-                  aria-label={`Tool ${field} ${axis}`} value={tool.placement[field][index]!} onCommit={(value) => {
-                    editTool(tool.id, "Move tool", (item) => {
-                      const kind = field === "position" ? "length" : "angle";
-                      try {
-                        documentEvaluator(useApp.getState().doc).num(value, kind);
-                      } catch {
-                        toast("warn", `Enter a valid ${kind} for the tool move.`);
-                        return item;
-                      }
-                      const values = [...item.placement[field]] as [string, string, string];
-                      values[index] = value;
-                      return { ...item, placement: { ...item.placement, [field]: values } };
-                    }, `tool-placement:${tool.id}:${field}:${axis}`);
-                  }} /></label>
-              ))}
-            </div>
-          </fieldset>
-        ))}
-      </details>
+      <button type="button" className="btn btn--small" disabled={!active}
+        onClick={() => selectTool({ kind: "tip", toolId: tool.id, tipId: tool.tipCsysId })}>Edit TIP</button>
       <details className="cam-tool__placement" open>
         <summary>Cutting definition</summary>
         <label>Flat endmill diameter (mm)
@@ -231,6 +222,8 @@ function ComponentProperties({ tool, bodyId, role }: { tool: CamToolPosition; bo
   const body = doc.bodies[bodyId];
   const name = body?.name ?? bodyId;
   const available = regen?.bodies.some((item) => item.id === bodyId);
+  const seed = findFeature(doc, bodyId);
+  const canCopy = seed?.type === "import" || (seed?.type === "move" && seed.copy);
   const issue = regen?.status.find((item) => item.id === bodyId && item.state === "error");
   const features = doc.features.slice(0, activeEnd(doc));
   const active = features.some((f) => f.id === tool.tipCsysId);
@@ -260,7 +253,7 @@ function ComponentProperties({ tool, bodyId, role }: { tool: CamToolPosition; bo
             });
           }} /> Visible</label>
       </div>
-      <h3>Placement</h3>
+      <h3>Placement relative to TIP</h3>
       {placements.length ? <ul>{placements.map((move) => (
         <li key={move.id}>{move.placement
           ? `${datumName(move.placement.from)} → ${datumName(move.placement.to)}`
@@ -268,8 +261,8 @@ function ComponentProperties({ tool, bodyId, role }: { tool: CamToolPosition; bo
       ))}</ul> : <p>As inserted</p>}
       <div className="cam-tool__actions">
         <button className="btn btn--small" type="button" disabled={!available || !active} onClick={() => startMove(bodyId)}>Move</button>
-        <button className="btn btn--small" type="button" disabled={!active || !findFeature(doc, bodyId, "import")}
-          title="Copy the imported body into this tool" onClick={() => copyBodyIntoTool(tool.id, role, bodyId)}>Copy</button>
+        <button className="btn btn--small" type="button" disabled={!available || !active || !canCopy}
+          title="Copy this component and its placement" onClick={() => copyBodyIntoTool(tool.id, role, bodyId)}>Copy</button>
         <button className="btn btn--small" type="button" onClick={() => {
           deleteFeature(bodyId);
           selectTool({ kind: "position", toolId: tool.id });

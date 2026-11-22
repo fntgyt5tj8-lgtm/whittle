@@ -72,7 +72,7 @@ import {
   type NamedView,
   uid,
 } from "@whittle/core";
-import type { CamToolComponentRole } from "@whittle/cam";
+import type { CamToolComponentRole, CamToolSourceTransform } from "@whittle/cam";
 import { tangentChain } from "./edgeChain";
 import { promptDialog } from "./dialogs";
 import { viewportRef } from "../viewport/current";
@@ -340,7 +340,7 @@ export function startMove(body = selectedBodyId() ?? lastBodyId()) {
   if (tool && !doc.features.slice(0, activeEnd(doc)).some((f) => f.id === tool.tipCsysId)) {
     return toast("warn", "Restore the tool timeline before moving its components.");
   }
-  beginNewFeature(makeMove(doc, body), "New Move", tool?.tipCsysId);
+  beginNewFeature(makeMove(doc, body), "New Move");
 }
 
 export function startCombine() {
@@ -366,6 +366,7 @@ export function importModel(target?: ToolImportTarget) {
 interface ToolImportTarget {
   id: Id;
   role: CamToolComponentRole;
+  sourceToTip?: CamToolSourceTransform;
 }
 
 export function addToolComponentFeatures(
@@ -376,7 +377,9 @@ export function addToolComponentFeatures(
   const tool = draft.manufacturing?.toolPositions?.find((item) => item.id === target.id);
   const at = draft.features.findIndex((item) => item.id === tool?.tipCsysId);
   if (!tool || at < 0 || at >= activeEnd(draft)) return;
-  const components = features.map((f) => ({ bodyId: f.id, role: target.role }));
+  const components = features.map((f) => ({
+    bodyId: f.id, role: target.role, ...(target.sourceToTip && { sourceToTip: target.sourceToTip }),
+  }));
   draft.manufacturing = {
     ...draft.manufacturing!,
     toolPositions: draft.manufacturing!.toolPositions!.map((item) => item.id === target.id
@@ -876,6 +879,7 @@ export function handlePick(p: Pick | null, additive: boolean) {
     const input = session.csysInput;
     const refs = { ...f.refs };
     const tool = toolForTip(doc, f.id);
+    if (tool && p.kind === "edge" && (get().builtDoc !== doc || !get().regen?.pickBodies)) return;
     if (tool && p.kind === "edge" && !tool.components.some((item) => item.bodyId === p.bodyId)) {
       return toast("info", "Pick geometry from a component in this tool position.");
     }
@@ -1259,6 +1263,15 @@ export function handlePick(p: Pick | null, additive: boolean) {
       x.bodyId ??= ref.bodyId;
     });
     return;
+  }
+  if (!session && !additive && p && get().ribbonTab === "manufacturing" && get().camBrowserTab === "tools") {
+    if (p.kind === "body" || p.kind === "face" || p.kind === "edge") {
+      const tool = toolForBody(doc, p.bodyId);
+      if (tool) set({ camToolSelection: { kind: "component", toolId: tool.id, bodyId: p.bodyId }, panelOpen: true });
+    } else if (p.kind === "datum" && p.datumKind === "csys") {
+      const tool = toolForTip(doc, p.id);
+      if (tool) set({ camToolSelection: { kind: "tip", toolId: tool.id, tipId: p.id }, panelOpen: true });
+    }
   }
   if (session && !p) return;
   if (!p) {

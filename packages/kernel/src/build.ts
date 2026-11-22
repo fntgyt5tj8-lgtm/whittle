@@ -8,7 +8,7 @@
  * friendly message (and, where possible, a one-click fix) and later features
  * keep building on the last good state.
  */
-import { CSYS_INPUT_KINDS, type BodyOp, type CsysFeature, type CsysInput, type EdgeRef, type LengthUnit, lengthText, type Evaluator, type FaceRef, type Feature, type HoleFeature, type Id, type SketchFeature, type SketchSolution, type Vec3, type WhittleDocument, activeEnd, cadRevision, createEvaluator, deserializeDocument, validateCadSource, drawnEntities, entityOutline, expandSketch, frameAxes, planeOrigin, sketchGap, polylinePath, resolveEntity, thickenPath, toolForTip } from "@whittle/core";
+import { CSYS_INPUT_KINDS, type BodyOp, type CsysFeature, type CsysInput, type EdgeRef, type LengthUnit, lengthText, type Evaluator, type FaceRef, type Feature, type HoleFeature, type Id, type SketchFeature, type SketchSolution, type Vec3, type WhittleDocument, activeEnd, cadRevision, createEvaluator, deserializeDocument, validateCadSource, drawnEntities, entityOutline, expandSketch, frameAxes, planeOrigin, sketchGap, polylinePath, resolveEntity, thickenPath, toolForBody, toolForTip } from "@whittle/core";
 import { type Blueprint, Drawing, type Edge, type Face, draw, organiseBlueprints, type FaceFinder, Plane, type Shape3D, type Wire, asDir, basicFaceExtrusion, cast, downcast, genericSweep, getOC, makeHelix, makeOffset, makePln, drawCircle, importSTEP, loft, makeBox, makeSolid, Vector, makeCompound, makeCylinder, makeSphere, Transformation, measureArea, measureShapeVolumeProperties } from "replicad";
 import type { BodyResult, FeatureStatus, PartialCsys, RegenResult, SketchFrame } from "./protocol";
 import type { CoilFeature, DraftFeature, OffsetFaceFeature, PlaneRef, SweepFeature } from "@whittle/core";
@@ -191,6 +191,20 @@ function manualCsysFrame(
   const [rx, ry, rz] = placement.rotation.map((expr, i) => ev.num(expr, "angle", `Rotation about ${"XYZ"[i]}`)) as Vec3;
   const rotate = (v: Vec3) => rotateAbout(rotateAbout(rotateAbout(v, AXES.x, rx), AXES.y, ry), AXES.z, rz);
   return { id, kind: "csys", origin, xDir: rotate(AXES.x), yDir: rotate(AXES.y), normal: rotate(AXES.z) };
+}
+
+const TIP_ORIGIN: SketchFrame = { id: "", kind: "csys", origin: [0, 0, 0], ...ORIGIN_FRAMES.XY! };
+
+function transformFrame(frame: SketchFrame, pose: SketchFrame): SketchFrame {
+  const vector = (v: Vec3) => add(add(scale(pose.xDir, v[0]), scale(pose.yDir, v[1])), scale(pose.normal, v[2]));
+  return { ...frame, origin: add(pose.origin, vector(frame.origin)),
+    xDir: vector(frame.xDir), yDir: vector(frame.yDir), normal: vector(frame.normal) };
+}
+
+function isIdentityFrame(frame: SketchFrame): boolean {
+  return [...frame.origin, ...subv(frame.xDir, TIP_ORIGIN.xDir),
+    ...subv(frame.yDir, TIP_ORIGIN.yDir), ...subv(frame.normal, TIP_ORIGIN.normal)]
+    .every((value) => Math.abs(value) < 1e-12);
 }
 
 function csysFrame(
@@ -417,6 +431,55 @@ export class Builder {
 
   private ghostFeature: Id | undefined;
 
+  /** Resolve the old TIP once so legacy component geometry can be expressed in native TIP coordinates. */
+  migrateCamTools(doc: WhittleDocument): Pick<WhittleDocument, "manufacturing"> & { tips: CsysFeature[] } {
+    const project = doc.manufacturing;
+    const tips: CsysFeature[] = [];
+    if (!project?.toolPositions?.some((tool) => tool.placement)) return { manufacturing: project, tips };
+    const ev = createEvaluator(doc.parameters, doc.units);
+    this.ghostFeature = undefined;
+    this.walk({ ...doc, rollback: null });
+    const toolPositions = project.toolPositions.map((tool) => {
+      const { placement, ...position } = tool;
+      if (!placement) return tool;
+      const index = doc.features.findIndex((feature) => feature.id === tool.tipCsysId);
+      const tip = doc.features[index];
+      const before = this.walkSnaps[index - 1];
+      if (tip?.type !== "csys") return position;
+      let local: SketchFrame;
+      let pose: SketchFrame;
+      try {
+        local = csysFrame(tip, ev, (id) => toolForTip(doc, id) ? undefined : before?.sketches.get(id)?.frame, before?.bodies ?? new Map(), undefined, tool).frame;
+        pose = manualCsysFrame(tool.id, placement, ev);
+      } catch {
+        // Keep unresolved references editable. No evaluated TIP exists to rebase against.
+        return position;
+      }
+      const usesPlacedComponent = tip.mode === "references" && Object.values(tip.refs).some((ref) =>
+        (ref?.kind === "edge" || ref?.kind === "vertex") && doc.features.slice(0, index).some((feature) =>
+          feature.type === "move" && !feature.copy && feature.bodyId === ref.edge.bodyId));
+      if (!isIdentityFrame(pose) || usesPlacedComponent) {
+        const world = transformFrame(local, pose);
+        const horizontal = Math.hypot(world.xDir[0], world.xDir[1]);
+        const angles: Vec3 = [
+          horizontal > 1e-10 ? Math.atan2(world.yDir[2], world.normal[2]) : Math.atan2(-world.normal[1], world.yDir[1]),
+          Math.atan2(-world.xDir[2], horizontal),
+          horizontal > 1e-10 ? Math.atan2(world.xDir[1], world.xDir[0]) : 0,
+        ];
+        tips.push({ ...tip, mode: "manual",
+          position: world.origin.map((value) => lengthText(value, doc.units, 12)) as CsysFeature["position"],
+          rotation: angles.map((value) => deg(value).toFixed(12)) as CsysFeature["rotation"] });
+      }
+      if (isIdentityFrame(local)) return position;
+      const vector = (v: Vec3): Vec3 => [dot(v, local.xDir), dot(v, local.yDir), dot(v, local.normal)];
+      const sourceToTip = {
+        origin: vector(scale(local.origin, -1)), xDir: vector(AXES.x), yDir: vector(AXES.y), normal: vector(AXES.z),
+      };
+      return { ...position, components: position.components.map((component) => ({ ...component, sourceToTip })) };
+    });
+    return { manufacturing: { ...project, toolPositions }, tips };
+  }
+
   regen(doc: WhittleDocument, quality: "preview" | "final", pickBefore?: Id, preview?: Id): Omit<RegenResult, "seq"> {
     unitName = doc.units;
     const t0 = performance.now();
@@ -449,7 +512,9 @@ export class Builder {
       const idx = doc.features.findIndex((f) => f.id === pickBefore);
       const before = idx > 0 ? this.cache[idx - 1] : undefined;
       pickBodies = [];
+      const tool = toolForTip(doc, pickBefore);
       for (const [id, shape] of before?.bodies ?? []) {
+        if (tool && !tool.components.some(({ bodyId }) => bodyId === id)) continue;
         try {
           pickBodies.push(this.mesh(id, shape, "preview"));
         } catch {
@@ -465,8 +530,10 @@ export class Builder {
     if (gi < end && active?.type === "csys" && active.mode === "references" && !active.suppressed && beforeActive &&
       !this.cache[gi]?.sketches.has(active.id)) {
       try {
-        csysFrame(active, createEvaluator(doc.parameters, doc.units), (id) => beforeActive.sketches.get(id)?.frame, beforeActive.bodies,
-          (partial) => { partialCsys = partial; }, toolForTip(doc, active.id));
+        const tool = toolForTip(doc, active.id);
+        csysFrame(active, createEvaluator(doc.parameters, doc.units),
+          (id) => tool && toolForTip(doc, id) ? undefined : beforeActive.sketches.get(id)?.frame,
+          beforeActive.bodies, (partial) => { partialCsys = partial; }, tool);
       } catch {
         // The build status already describes the incomplete or invalid input.
       }
@@ -570,8 +637,10 @@ export class Builder {
       const f = doc.features[i]!;
       // Reference images aren't geometry. The key chains every step before this one, so it is hashed to stay a fixed size.
       const toolPosition = f.type === "csys" ? toolForTip(doc, f.id) : undefined;
-      const tool = this.ghostFeature === f.id ? undefined : toolPosition;
-      const toolSignature = toolPosition ? JSON.stringify([tool?.placement, toolPosition.components.map(({ bodyId }) => bodyId)]) : "";
+      const moveOwner = f.type === "move" ? toolForBody(doc, f.bodyId) : undefined;
+      const toolSignature = toolPosition
+        ? JSON.stringify([toolPosition.placement, toolPosition.components.map(({ bodyId, sourceToTip }) => [bodyId, sourceToTip])])
+        : moveOwner ? JSON.stringify(moveOwner.tipCsysId) : "";
       const key = hashKey(prev.key + "|" + (f.type === "import" ? f.id + ":" + importKey(f) + f.scale + !!f.suppressed : JSON.stringify(f.type === "sketch" ? { ...f, image: undefined, name: undefined } : { ...f, name: undefined })) + (f.type === "joint" ? compSig : "") + toolSignature);
       const cached = this.cache[i];
       let snap: Snapshot;
@@ -580,7 +649,7 @@ export class Builder {
         snap = cached;
       } else {
         rebuilt++;
-        snap = this.step(f, prev, ev, key, tool);
+        snap = this.step(f, prev, ev, key, toolPosition);
       }
       nextCache.push(snap);
       this.onProgress?.(i + 1, end);
@@ -608,36 +677,27 @@ export class Builder {
     ghostSink.tool = null;
     ghostSink.op = null;
     noteSink.text = undefined;
-    let errorBodies = prev.bodies;
     try {
-      let pose: SketchFrame | undefined;
-      if (tool) {
-        pose = manualCsysFrame(tool.id, tool.placement, ev);
-        const world: SketchFrame = { id: tool.id, kind: "csys", origin: [0, 0, 0], ...ORIGIN_FRAMES.XY! };
-        const identity = [...pose.origin, ...subv(pose.xDir, world.xDir),
-          ...subv(pose.yDir, world.yDir), ...subv(pose.normal, world.normal)].every((value) => Math.abs(value) < 1e-12);
-        if (!identity) {
-          const placed = new Map(bodies);
+      if (f.suppressed) return { key, bodies, sketches, status: { id: f.id, state: "suppressed" } };
+      const warning = this.apply(f, bodies, sketches, ev);
+      const tip = tool && sketches.get(f.id);
+      if (tool && tip) {
+        if (tool.placement) {
+          // Read old tool documents while their one-time conversion is prepared.
+          const pose = manualCsysFrame(tool.id, tool.placement, ev);
+          sketches.set(f.id, { ...tip, frame: transformFrame(tip.frame, pose) });
           for (const { bodyId } of tool.components) {
             const shape = bodies.get(bodyId);
-            if (shape) placed.set(bodyId, placeBetweenFrames(shape, world, pose));
+            if (shape && !isIdentityFrame(pose)) bodies.set(bodyId, placeBetweenFrames(shape, TIP_ORIGIN, pose));
           }
-          errorBodies = placed;
-        }
-      }
-      if (f.suppressed) return { key, bodies: new Map(errorBodies), sketches, status: { id: f.id, state: "suppressed" } };
-      // Native CSYS references resolve against the tool-local bodies before either is placed.
-      const warning = this.apply(f, bodies, sketches, ev);
-      if (pose) {
-        bodies = new Map(errorBodies);
-        const tip = sketches.get(f.id);
-        if (tip) {
-          const vector = (v: Vec3) => add(add(scale(pose.xDir, v[0]), scale(pose.yDir, v[1])), scale(pose.normal, v[2]));
-          const frame = tip.frame;
-          sketches.set(f.id, { ...tip, frame: {
-            ...frame, origin: add(pose.origin, vector(frame.origin)), xDir: vector(frame.xDir),
-            yDir: vector(frame.yDir), normal: vector(frame.normal),
-          } });
+        } else {
+          for (const { bodyId, sourceToTip } of tool.components) {
+            const shape = bodies.get(bodyId);
+            const pose = sourceToTip ? transformFrame({ ...sourceToTip, id: bodyId, kind: "csys",
+              origin: [...sourceToTip.origin], xDir: [...sourceToTip.xDir],
+              yDir: [...sourceToTip.yDir], normal: [...sourceToTip.normal] }, tip.frame) : tip.frame;
+            if (shape && !isIdentityFrame(pose)) bodies.set(bodyId, placeBetweenFrames(shape, TIP_ORIGIN, pose));
+          }
         }
       }
       return {
@@ -653,7 +713,7 @@ export class Builder {
       const incomplete = e instanceof FeatureError && e.warning;
       return {
         key,
-        bodies: new Map(errorBodies),
+        bodies: new Map(prev.bodies),
         sketches,
         status: { id: f.id, state: incomplete ? "incomplete" : "error", message: describeError(f, e), fix, ms: performance.now() - t },
       };
@@ -706,7 +766,9 @@ export class Builder {
       }
 
       case "csys": {
-        const { frame, warning } = csysFrame(f, ev, (id) => sketches.get(id)?.frame, bodies, undefined, toolForTip(this.curDoc!, f.id));
+        const tool = toolForTip(this.curDoc!, f.id);
+        const built = (id: Id) => tool && toolForTip(this.curDoc!, id) ? undefined : sketches.get(id)?.frame;
+        const { frame, warning } = csysFrame(f, ev, built, bodies, undefined, tool);
         sketches.set(f.id, { frame, drawing: null });
         return warning;
       }
@@ -1229,9 +1291,17 @@ export class Builder {
       case "move": {
         const id = f.bodyId ?? lastBody(bodies);
         if (!id || !bodies.has(id)) throw new FeatureError("Pick a body to move.");
-        const src = bodies.get(id)!;
+        const owner = toolForBody(this.curDoc!, id);
+        const tip = owner && sketches.get(owner.tipCsysId)?.frame;
+        if (owner && !tip && this.walkSnaps.length >
+          this.curDoc!.features.findIndex((feature) => feature.id === owner.tipCsysId)) {
+          throw new FeatureError("Resolve TIP before moving this tool component.");
+        }
+        const world = bodies.get(id)!;
+        const src = tip ? placeBetweenFrames(world, tip, TIP_ORIGIN) : world;
         let out: Shape3D;
         if (f.placement) {
+          if (tip && !owner?.placement) throw new FeatureError("Use TIP-relative placement for this tool component.");
           const from = f.placement.from && sketches.get(f.placement.from)?.frame;
           const to = f.placement.to && sketches.get(f.placement.to)?.frame;
           if (!from || !to || from.kind !== "csys" || to.kind !== "csys") {
@@ -1245,6 +1315,7 @@ export class Builder {
           if (Math.abs(a) > 1e-9) out = out.rotate(a, boxCenter(src), AXES[f.axis]);
           if (tr.some((v) => Math.abs(v) > 1e-12)) out = out.translate(tr);
         }
+        if (tip) out = placeBetweenFrames(out, TIP_ORIGIN, tip);
         if (f.copy) bodies.set(f.id, out);
         else bodies.set(id, out);
         return;

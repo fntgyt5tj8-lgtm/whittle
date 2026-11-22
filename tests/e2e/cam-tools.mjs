@@ -164,19 +164,18 @@ try {
   await toolsTab.click();
   await position.click();
   await positions.getByRole("button", { name: "TIP", exact: true }).click();
-  const originX = tipPanel.getByLabel("Origin X", { exact: true });
-  await originX.fill("5");
-  await originX.press("Tab");
+  await commit(tipPanel.getByLabel("Origin X", { exact: true }), "25");
+  await commit(tipPanel.getByLabel("Rotation about Z", { exact: true }), "90");
   await tipPanel.getByRole("button", { name: "OK", exact: true }).click();
-  await position.click();
-  await properties.getByText("Move tool", { exact: true }).click();
-  const positionX = properties.getByLabel("Tool position X", { exact: true });
-  await positionX.fill("25");
-  await positionX.press("Tab");
-  await page.waitForFunction((id) => {
+  await page.waitForFunction(({ tipCsysId, components }) => {
     const { doc, builtDoc, regen } = window.whittle.useApp.getState();
-    return doc === builtDoc && regen?.planes.find((frame) => frame.id === id)?.origin[0] === 30;
-  }, tool.tipCsysId);
+    const tip = regen?.planes.find((frame) => frame.id === tipCsysId);
+    const low = (id) => regen?.bodies.find((body) => body.id === id)?.bbox[0];
+    const [cutter, holder] = components.map(({ bodyId }) => low(bodyId));
+    return doc === builtDoc && tip?.origin[0] === 25 && Math.abs(tip.xDir[1] - 1) < 1e-6
+      && Math.abs(holder[1] - cutter[1] - 10) < 1e-6 && Math.abs(holder[0] - cutter[0]) < 1e-6;
+  }, tool);
+  await position.click();
 
   await isolate.click();
   await checkVisibility(bodyIds);
@@ -197,7 +196,7 @@ try {
   assert.equal(await restore.count(), 0);
   assert.equal((await toolModel()).id, tool.id);
   assert.equal(await page.evaluate((id) => window.whittle.useApp.getState().doc.bodies[id].visible, holderId), false);
-  assert.equal(await page.evaluate((id) => window.whittle.useApp.getState().regen.planes.find((frame) => frame.id === id)?.origin[0], tool.tipCsysId), 30);
+  assert.equal(await page.evaluate((id) => window.whittle.useApp.getState().regen.planes.find((frame) => frame.id === id)?.origin[0], tool.tipCsysId), 25);
   assert.equal((await toolModel()).cutting.diameter, 6);
   await manufacturing.click();
   await toolsTab.click();

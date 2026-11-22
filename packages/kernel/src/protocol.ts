@@ -3,7 +3,7 @@
  * The default implementation runs OpenCascade (WASM) in a Web Worker; a native
  * sidecar or a remote kernel can implement the same messages later.
  */
-import type { Id, SketchSolution, Vec3, WhittleDocument } from "@whittle/core";
+import type { CsysFeature, Id, SketchSolution, Vec3, WhittleDocument } from "@whittle/core";
 
 export interface FaceInfo {
   center: Vec3;
@@ -167,7 +167,10 @@ export type ExportFormat = "step" | "stl" | "3mf" | "obj" | "glb" | "ply" | "dra
 /** How finely curved faces are cut into triangles for mesh formats: smoother files are bigger. */
 export type MeshQuality = "draft" | "standard" | "fine";
 
+export type CamToolMigration = Pick<WhittleDocument, "manufacturing"> & { tips: CsysFeature[] };
+
 export type KernelRequest =
+  | { type: "migrate-cam-tools"; seq: number; doc: WhittleDocument }
   | { type: "regen"; seq: number; doc: WhittleDocument; quality: "preview" | "final"; pickBefore?: Id; preview?: Id }
   | { type: "export"; seq: number; doc: WhittleDocument; format: ExportFormat; bodyIds?: Id[]; quality?: MeshQuality; drawing?: DrawingSettings }
   | { type: "inspect"; seq: number; doc: WhittleDocument; kind: InspectKind; picks?: MeasurePick[] };
@@ -175,6 +178,7 @@ export type KernelRequest =
 export type KernelResponse =
   | { type: "ready"; ms: number }
   | { type: "regen"; result: RegenResult }
+  | { type: "migrate-cam-tools"; seq: number; result: CamToolMigration }
   /** A long rebuild is under way: `done` of `total` timeline steps are finished. */
   | { type: "progress"; seq: number; done: number; total: number }
   | { type: "export"; seq: number; data: Uint8Array; mime: string; ext: string }

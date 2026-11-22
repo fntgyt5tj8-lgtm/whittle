@@ -711,7 +711,8 @@ function MoveEditor({ f }: { f: MoveFeature }) {
   return (
     <>
       {toolMove ? <div>{doc.bodies[f.bodyId ?? ""]?.name}</div> : <BodySelect value={f.bodyId} allowAuto="Latest body" exclude={f.id} onChange={(v) => { if (!toolForBody(doc, v)) upd(f, "Body", (d) => void (d.bodyId = v)); }} />}
-      {(isCam || f.placement) && <Toggle label="Place between coordinate systems" checked={!!f.placement}
+      {toolMove && !f.placement && <p className="field__note">Translation and rotation use the TIP axes.</p>}
+      {((isCam && !toolMove) || f.placement) && <Toggle label="Place between coordinate systems" checked={!!f.placement}
         onChange={(checked) => upd(f, "Placement mode", (d) => void (d.placement = checked ? {} : undefined))} />}
       {f.placement ? (["from", "to"] as const).map((end) => (
         <Select key={end} label={end === "from" ? "Source CSYS" : "Target CSYS"} value={f.placement?.[end] ?? ""}
@@ -1107,10 +1108,11 @@ function CsysEditor({ f }: { f: CsysFeature }) {
               })}
             </div>
           ))}
-          <p className="field__note">The origin uses {isTip ? "tool-local" : "world"} coordinates. Rotations follow the right-hand rule about fixed X, then Y, then Z.</p>
+          <p className="field__note">The origin uses world coordinates. Rotations follow the right-hand rule about fixed X, then Y, then Z.</p>
         </>
       ) : (
         <>
+          {isTip && <p className="field__note">Component references use the source geometry shown in the viewport. Component moves leave these references fixed.</p>}
           <div className="csys-refs">
             {CSYS_FIELDS.map(({ input, label, hint }) => {
               const ref = f.refs?.[input];

@@ -1,6 +1,6 @@
 /** Main-thread handle to the kernel worker (the default KernelHost). */
 import type { Id, WhittleDocument } from "@whittle/core";
-import type { DrawingSettings, ExportFormat, InspectKind, InspectResult, KernelRequest, KernelResponse, MeasurePick, MeshQuality, RegenResult } from "./protocol";
+import type { CamToolMigration, DrawingSettings, ExportFormat, InspectKind, InspectResult, KernelRequest, KernelResponse, MeasurePick, MeshQuality, RegenResult } from "./protocol";
 
 export interface KernelHost {
   readonly ready: Promise<number>;
@@ -57,7 +57,7 @@ export class WorkerKernel implements KernelHost {
       if (!p) return;
       this.settle(seq);
       if (msg.type === "error") p.reject(new Error(msg.message));
-      else if (msg.type === "regen" || msg.type === "inspect") p.resolve(msg.result as never);
+      else if (msg.type === "regen" || msg.type === "inspect" || msg.type === "migrate-cam-tools") p.resolve(msg.result as never);
       else p.resolve({ data: msg.data, mime: msg.mime, ext: msg.ext } as never);
     };
     mine.onerror = (e) => {
@@ -115,6 +115,10 @@ export class WorkerKernel implements KernelHost {
 
   inspect(doc: WhittleDocument, kind: InspectKind, picks?: MeasurePick[]) {
     return this.send<InspectResult>({ type: "inspect", seq: ++this.seq, doc, kind, picks });
+  }
+
+  migrateCamTools(doc: WhittleDocument) {
+    return this.send<CamToolMigration>({ type: "migrate-cam-tools", seq: ++this.seq, doc });
   }
 
   private send<T>(req: KernelRequest, regen = false): Promise<T> {

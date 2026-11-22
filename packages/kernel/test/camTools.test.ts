@@ -39,16 +39,14 @@ it("round-trips independent tool instances and native TIPs without changing the 
   const otherTip = { ...makeCsys(doc), name: "TIP" };
   tip.position[0] = "height";
   doc.parameters.push({ id: "height", name: "height", expr: "2 mm", kind: "length" });
-  doc.features.push(ordinary, cutter, holder, move, tip, spare, otherTip);
+  doc.features.push(ordinary, cutter, holder, tip, move, spare, otherTip);
   const tool: CamToolPosition = {
     id: "tool-a", number: 7, name: "Endmill", tipCsysId: tip.id,
     components: [{ bodyId: cutter.id, role: "cutter" }, { bodyId: holder.id, role: "holder" }],
     cutting: { kind: "flat-endmill", diameter: 6 },
-    placement: { position: ["100", "0", "0"], rotation: ["0", "0", "90"] },
   };
   const other: CamToolPosition = {
     ...tool, id: "tool-b", number: 8, tipCsysId: otherTip.id, components: [{ bodyId: spare.id, role: "insert" }],
-    placement: { position: ["0", "0", "0"], rotation: ["0", "0", "0"] },
   };
   doc.manufacturing = { ...createProject("CAM"), toolPositions: [tool, other] };
 
@@ -57,13 +55,32 @@ it("round-trips independent tool instances and native TIPs without changing the 
   const editable = engine.regen(doc, "preview", tip.id);
   const local = editable.planes.find((plane) => plane.id === tip.id)!;
   expect(local.origin).toEqual([2, 0, 0]);
+  const lower = (result: ReturnType<Builder["regen"]>, id: string) =>
+    result.bodies.find((body) => body.id === id)!.bbox[0];
   const baseline = engine.regen(doc, "final");
-  const placed = baseline.planes.find((plane) => plane.id === tip.id)!;
+  expect(lower(baseline, holder.id)[0] - lower(baseline, cutter.id)[0]).toBeCloseTo(30);
+
+  tip.position = ["100", "height", "0"];
+  tip.rotation[2] = "90";
+  const rotated = engine.regen(doc, "final");
+  const placed = rotated.planes.find((plane) => plane.id === tip.id)!;
   expect(placed.origin).toEqual([100, 2, 0]);
   expect(placed.xDir[1]).toBeCloseTo(1);
-  const lower = (id: string) => baseline.bodies.find((body) => body.id === id)!.bbox[0];
-  expect(lower(holder.id)[1] - lower(cutter.id)[1]).toBeCloseTo(30);
-  expect(lower(ordinary.id)).toEqual(lower(spare.id));
+  expect(lower(rotated, holder.id)[1] - lower(rotated, cutter.id)[1]).toBeCloseTo(30);
+  expect(lower(rotated, holder.id)[0]).toBeCloseTo(lower(rotated, cutter.id)[0]);
+  expect(lower(rotated, ordinary.id)).toEqual(lower(rotated, spare.id));
+  expect(lower(rotated, ordinary.id)).toEqual(lower(baseline, ordinary.id));
+
+  tip.position[0] = "120";
+  const translated = engine.regen(doc, "final");
+  for (const id of [cutter.id, holder.id]) {
+    expect(lower(translated, id)[0] - lower(rotated, id)[0]).toBeCloseTo(20);
+    expect(lower(translated, id)[1]).toBeCloseTo(lower(rotated, id)[1]);
+  }
+  move.translate[0] = "45";
+  const componentMoved = engine.regen(doc, "final");
+  expect(lower(componentMoved, cutter.id)).toEqual(lower(translated, cutter.id));
+  expect(lower(componentMoved, holder.id)[1] - lower(componentMoved, cutter.id)[1]).toBeCloseTo(45);
 
   const localCutter = editable.pickBodies!.find((body) => body.id === cutter.id)!;
   const z = localCutter.edges.find((edge) => edge.curve === "LINE" && Math.abs(edge.tangent[2]) > 0.99)!;
@@ -74,8 +91,22 @@ it("round-trips independent tool instances and native TIPs without changing the 
     z: { kind: "edge", edge: { ...z, bodyId: cutter.id } },
     x: { kind: "edge", edge: { ...x, bodyId: cutter.id } },
   };
+  const initialReferences = engine.regen(doc, "final");
+  expect(initialReferences.status.find(({ id }) => id === tip.id)?.state).toBe("ok");
+  tip.flipZ = true;
   const referenced = engine.regen(doc, "final");
-  expect(referenced.status.find(({ id }) => id === tip.id)?.state).toBe("ok");
+  const refFrame = referenced.planes.find(({ id }) => id === tip.id)!;
+  const firstFrame = initialReferences.planes.find(({ id }) => id === tip.id)!;
+  expect(refFrame.normal[2]).toBeCloseTo(-firstFrame.normal[2]);
+  expect(refFrame.origin).toEqual(firstFrame.origin);
+  expect(Math.abs(lower(referenced, holder.id)[0] - lower(referenced, cutter.id)[0])).toBeCloseTo(45);
+  const cutterMove = makeMove(doc, cutter.id);
+  if (cutterMove.type !== "move") throw new Error("Expected a native Move");
+  cutterMove.translate[2] = "7";
+  doc.features.push(cutterMove);
+  const movedReferenceSource = engine.regen(doc, "final");
+  expect(movedReferenceSource.planes).toEqual(referenced.planes);
+  expect(lower(movedReferenceSource, holder.id)).toEqual(lower(referenced, holder.id));
   const reopened = deserializeCamDocument(serializeCamDocument(doc));
   expect(reopened.manufacturing).toEqual(doc.manufacturing);
   expect(reopened.bodies[holder.id]?.visible).toBe(false);
@@ -84,7 +115,7 @@ it("round-trips independent tool instances and native TIPs without changing the 
   const reopenedGeometry = rebuilt.regen(reopened, "final");
   expect(reopenedGeometry.planes).toEqual(referenced.planes);
   expect(reopenedGeometry.bodies.map(({ id, bbox }) => ({ id, bbox })))
-    .toEqual(referenced.bodies.map(({ id, bbox }) => ({ id, bbox })));
+    .toEqual(movedReferenceSource.bodies.map(({ id, bbox }) => ({ id, bbox })));
 
   removeCamToolGeometry(reopened, tool, cutter.id);
   const remaining = { ...tool, components: tool.components.filter((item) => item.bodyId !== cutter.id) };
@@ -92,8 +123,7 @@ it("round-trips independent tool instances and native TIPs without changing the 
   const invalid = rebuilt.regen(deserializeCamDocument(serializeCamDocument(reopened)), "final");
   expect(invalid.planes.some(({ id }) => id === tip.id)).toBe(false);
   expect(invalid.status.find(({ id }) => id === tip.id)?.state).toBe("error");
-  expect(invalid.bodies.find(({ id }) => id === holder.id)?.bbox)
-    .toEqual(referenced.bodies.find(({ id }) => id === holder.id)?.bbox);
+  expect(invalid.status.find(({ id }) => id === move.id)?.message).toMatch(/Resolve TIP/);
 
   removeCamToolGeometry(reopened, remaining);
   reopened.manufacturing = { ...reopened.manufacturing!, toolPositions: [other] };
@@ -102,4 +132,46 @@ it("round-trips independent tool instances and native TIPs without changing the 
   expect(deleted.planes.map(({ id }) => id)).toEqual([otherTip.id]);
   expect(source).toEqual(original);
   expect(await cadRevision(sourceBytes)).toBe(revision);
+});
+
+it("migrates a legacy tool's evaluated TIP and component poses on reopen", async () => {
+  const doc = newDocument("Legacy CAM");
+  const source = newDocument("Tool CAD");
+  const shape = makePrimitive(source, "box");
+  source.features.push(shape);
+  const bytes = Uint8Array.from(serializeDocument(source));
+  const cutter = makeImport(doc, "legacy.whittle", "whittle", Buffer.from(bytes).toString("base64"));
+  cutter.cadSource = { version: 1, documentId: source.id!, bodyId: shape.id, revision: await cadRevision(bytes) };
+  const move = makeMove(doc, cutter.id);
+  if (move.type !== "move") throw new Error("Expected a native Move");
+  move.translate[2] = "9";
+  const tip = makeCsys(doc);
+  tip.position = ["4", "2", "0"];
+  tip.rotation[0] = "20";
+  doc.features.push(cutter, move, tip);
+  doc.manufacturing = { ...createProject("Legacy CAM"), toolPositions: [{
+    id: "legacy", number: 1, name: "Legacy tool", tipCsysId: tip.id,
+    components: [{ bodyId: cutter.id, role: "cutter" }],
+    placement: { position: ["22", "6", "8"], rotation: ["0", "90", "30"] },
+  }] };
+
+  const legacy = deserializeCamDocument(serializeCamDocument(doc));
+  const engine = new Builder();
+  await engine.prepareImports(legacy);
+  const old = engine.regen(legacy, "final");
+  const migrated = engine.migrateCamTools(legacy);
+  expect(migrated.manufacturing?.toolPositions?.[0]?.placement).toBeUndefined();
+  expect(migrated.manufacturing?.toolPositions?.[0]?.components[0]?.sourceToTip).toBeDefined();
+  const updated = deserializeCamDocument(serializeCamDocument({
+    ...legacy, manufacturing: migrated.manufacturing,
+    features: legacy.features.map((feature) => migrated.tips.find(({ id }) => id === feature.id) ?? feature),
+  }));
+  const current = engine.regen(updated, "final");
+  const oldFrame = old.planes[0]!;
+  const newFrame = current.planes[0]!;
+  for (const key of ["origin", "xDir", "yDir", "normal"] as const) {
+    newFrame[key].forEach((value, index) => expect(value).toBeCloseTo(oldFrame[key][index]!, 9));
+  }
+  current.bodies[0]!.bbox.flat().forEach((value, index) => expect(value).toBeCloseTo(old.bodies[0]!.bbox.flat()[index]!, 8));
+  expect(engine.migrateCamTools(updated).tips).toEqual([]);
 });

@@ -104,6 +104,15 @@ export function isCamProject(value: unknown): value is CamProject {
 
   const expressionTriple = (item: unknown) => Array.isArray(item) && item.length === 3
     && item.every((expr) => typeof expr === "string");
+  const vector = (item: unknown): item is [number, number, number] =>
+    Array.isArray(item) && item.length === 3 && item.every(Number.isFinite);
+  const rigidTransform = (item: unknown) => {
+    if (!record(item) || !vector(item.origin) || !vector(item.xDir) || !vector(item.yDir) || !vector(item.normal)) return false;
+    const [x, y, z] = [item.xDir, item.yDir, item.normal];
+    const cross = [x[1] * y[2] - x[2] * y[1], x[2] * y[0] - x[0] * y[2], x[0] * y[1] - x[1] * y[0]];
+    return [x, y, z].every((axis) => Math.abs(Math.hypot(...axis) - 1) < 1e-8)
+      && cross.every((value, index) => Math.abs(value - z[index]!) < 1e-8);
+  };
   const ids = new Set<string>();
   const numbers = new Set<number>();
   const owned = new Set<string>();
@@ -117,9 +126,10 @@ export function isCamProject(value: unknown): value is CamProject {
       || !Number.isSafeInteger(item.number) || item.number < 1 || numbers.has(item.number)) return false;
     numbers.add(item.number);
     return typeof item.name === "string" && !!item.name.trim() && uniqueId(item.tipCsysId, owned)
-      && record(item.placement) && expressionTriple(item.placement.position) && expressionTriple(item.placement.rotation)
+      && (item.placement === undefined || (record(item.placement) && expressionTriple(item.placement.position) && expressionTriple(item.placement.rotation)))
       && Array.isArray(item.components) && item.components.every((component) => record(component)
-        && uniqueId(component.bodyId, owned) && CAM_TOOL_COMPONENT_ROLES.includes(component.role as CamToolComponentRole))
+        && uniqueId(component.bodyId, owned) && CAM_TOOL_COMPONENT_ROLES.includes(component.role as CamToolComponentRole)
+        && (component.sourceToTip === undefined || (item.placement === undefined && rigidTransform(component.sourceToTip))))
       && (item.cutting === undefined || (record(item.cutting) && item.cutting.kind === "flat-endmill"
         && typeof item.cutting.diameter === "number" && Number.isFinite(item.cutting.diameter) && item.cutting.diameter > 0));
   };

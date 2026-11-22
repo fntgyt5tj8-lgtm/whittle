@@ -405,7 +405,7 @@ export function editFeature(id: Id) {
   const base = get().doc;
   const index = base.features.findIndex((x) => x.id === id);
   // Editing an early step shows the model as it was then, so later steps neither hide it nor slow the edit.
-  const isolated = index >= 0 && index < activeEnd(base) - 1;
+  const isolated = index >= 0 && index < activeEnd(base) - 1 && !toolForTip(base, id);
   set({
     session: { featureId: id, isNew: false, base, label: `Edit ${f.name}`, stack: [], isolated },
     doc: isolated ? produce(base, (d) => void (d.rollback = index + 1)) : base,

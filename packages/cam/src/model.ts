@@ -77,12 +77,22 @@ export type CamPlanItem =
   | { readonly kind: "process"; readonly processId: string; readonly stage: CamMachiningStage }
   | CamPlanStage;
 
-export const CAM_TOOL_COMPONENT_ROLES = ["cutter", "insert", "holder", "adapter", "other"] as const;
+export const CAM_TOOL_COMPONENT_ROLES = ["cutter", "insert", "collet", "holder", "adapter", "other"] as const;
 export type CamToolComponentRole = typeof CAM_TOOL_COMPONENT_ROLES[number];
+
+/** Rigid conversion of pre-TIP geometry imported from an older CAM document.
+ * Origin is in millimetres. Axes describe the old source coordinates in TIP coordinates. */
+export interface CamToolSourceTransform {
+  readonly origin: readonly [number, number, number];
+  readonly xDir: readonly [number, number, number];
+  readonly yDir: readonly [number, number, number];
+  readonly normal: readonly [number, number, number];
+}
 
 export interface CamToolComponent {
   readonly bodyId: string;
   readonly role: CamToolComponentRole;
+  readonly sourceToTip?: CamToolSourceTransform;
 }
 
 export interface CamToolPosition {
@@ -91,8 +101,8 @@ export interface CamToolPosition {
   readonly name: string;
   readonly components: readonly CamToolComponent[];
   readonly tipCsysId: string;
-  /** Internal tool-to-document transform. Expressions use the CAM document's units. */
-  readonly placement: {
+  /** Legacy file input only. Converted to native TIP and component transforms on load. */
+  readonly placement?: {
     readonly position: readonly [string, string, string];
     readonly rotation: readonly [string, string, string];
   };

@@ -1,6 +1,6 @@
 /** Keeps the geometry kernel in sync with the document. */
 import { produce } from "immer";
-import type { EdgeRef, WhittleDocument } from "@whittle/core";
+import { toolForTip, type EdgeRef, type WhittleDocument } from "@whittle/core";
 import { WorkerKernel } from "@whittle/kernel";
 import { edgeRefFromPick, pickableBodies } from "./actions";
 import { tangentChain } from "./edgeChain";
@@ -34,6 +34,7 @@ function pickBeforeFor(): string | undefined {
   const { session, doc } = useApp.getState();
   if (!session) return undefined;
   const f = findFeature(doc, session.featureId);
+  if (f?.type === "csys" && toolForTip(doc, f.id) && f.mode === "manual") return undefined;
   return f && ["fillet", "chamfer", "shell", "hole", "combine", "move", "draft", "offsetFace", "cplane", "csys", "construct", "curve", "surface", "thread", "replaceFace", "deleteFace", "align", "boundaryFill", "joint", "split", "offset", "scale", "mirror", "pattern", "boundingSolid"].includes(f.type) ? f.id : undefined;
 }
 
