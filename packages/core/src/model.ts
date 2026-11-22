@@ -853,6 +853,8 @@ export interface NamedView {
 export type DatumKind = "plane" | "axis" | "point" | "csys";
 
 export interface WhittleDocument {
+  /** Manufacturing history and operation settings saved with the part. */
+  manufacturing?: import("../../cam/src/model").CamProject;
   schema: number;
   /** Stable identity across saves (keys local version history). Older files get one on open. */
   id?: Id;

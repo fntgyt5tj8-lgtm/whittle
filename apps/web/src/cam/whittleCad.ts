@@ -4,6 +4,18 @@ import type { CamCadAdapter } from "./cadAdapter";
 import { findFeature, useApp } from "../state/store";
 
 export const whittleCad: CamCadAdapter = {
+  getCoordinateSystems() {
+    return useApp.getState().doc.features.filter((feature) => feature.type === "csys");
+  },
+
+  resolveCoordinateSystem(id) {
+    const { doc, builtDoc, regen } = useApp.getState();
+    if (builtDoc !== doc || !findFeature(doc, id, "csys")) return undefined;
+    if (regen?.status.find((item) => item.id === id)?.state !== "ok") return undefined;
+    const frame = regen?.planes.find((item) => item.id === id && item.kind === "csys");
+    return frame && { origin: frame.origin, x: frame.xDir, y: frame.yDir, z: frame.normal };
+  },
+
   getSelection() {
     const { doc, selection } = useApp.getState();
     const documentId = doc.id;

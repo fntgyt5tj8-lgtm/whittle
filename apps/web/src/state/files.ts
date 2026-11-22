@@ -564,7 +564,19 @@ export async function openVersionAsCopy(item: VersionItem) {
   if (!(await confirmDiscard())) return;
   try {
     const doc = deserializeDocument(await versionBytes(item));
-    doc.id = uid("d");
+    const sourceId = doc.id;
+    const documentId = uid("d");
+    doc.id = documentId;
+    const project = doc.manufacturing;
+    if (project) {
+      doc.manufacturing = {
+        ...project,
+        setups: project.setups.map((setup) => setup.part.documentId === sourceId
+          ? { ...setup, part: { ...setup.part, documentId } } : setup),
+        processes: project.processes.map((process) => process.contour?.documentId === sourceId && process.contour
+          ? { ...process, contour: { ...process.contour, documentId } } : process),
+      };
+    }
     doc.name = `${doc.name} (${new Date(item.at).toLocaleString()})`;
     loadDocument(doc, null);
     useApp.setState({ dirty: true });

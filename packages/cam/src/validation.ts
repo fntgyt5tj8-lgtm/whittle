@@ -41,3 +41,33 @@ export function validateProject(project: CamProject): string[] {
   }
   return errors;
 }
+
+/** Check the shape of a saved project before the workspace reads its fields. */
+export function isCamProject(value: unknown): value is CamProject {
+  const record = (item: unknown): item is Record<string, unknown> =>
+    !!item && typeof item === "object" && !Array.isArray(item);
+  const geometry = (item: unknown) => record(item) && typeof item.documentId === "string"
+    && typeof item.entityId === "string" && (item.kind === "body" || item.kind === "sketch");
+  const profile = (item: unknown) => record(item)
+    && (item.csys === undefined || item.csys === "world" || item.csys === "sketch"
+      || (typeof item.csys === "string" && item.csys.startsWith("datum:") && item.csys.length > 6))
+    && (item.side === undefined || item.side === "inside" || item.side === "outside")
+    && (item.direction === undefined || item.direction === "cw" || item.direction === "ccw")
+    && ["diameter", "depth", "clearance", "feed", "plungeFeed"].every((key) =>
+      item[key] === undefined || typeof item[key] === "string");
+
+  return record(value) && value.schemaVersion === 1 && typeof value.name === "string"
+    && Array.isArray(value.setups) && value.setups.every((item) => record(item)
+      && typeof item.id === "string" && typeof item.name === "string" && geometry(item.part))
+    && Array.isArray(value.processes) && value.processes.every((item) => record(item)
+      && typeof item.id === "string" && typeof item.name === "string" && typeof item.setupId === "string"
+      && item.kind === "profile" && (item.contour === undefined || geometry(item.contour))
+      && (item.profile === undefined || profile(item.profile))
+      && (item.track === undefined || (record(item.track)
+        && typeof item.track.id === "string" && typeof item.track.unitId === "string")))
+    && (value.processPlan === undefined || (Array.isArray(value.processPlan) && value.processPlan.every((item) =>
+      record(item) && (item.kind === "process"
+        ? typeof item.processId === "string" && (item.stage === "main" || item.stage === "sub")
+        : (item.kind === "transfer" || item.kind === "ejection")
+          && typeof item.id === "string" && typeof item.setupId === "string"))));
+}

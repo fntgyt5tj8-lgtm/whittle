@@ -11,12 +11,24 @@ export interface CamSetup {
   readonly part: CamGeometryRef;
 }
 
+export interface CircularProfileSettings {
+  readonly csys?: "world" | "sketch" | `datum:${string}`;
+  readonly side?: "inside" | "outside";
+  readonly direction?: "cw" | "ccw";
+  readonly diameter?: string;
+  readonly depth?: string;
+  readonly clearance?: string;
+  readonly feed?: string;
+  readonly plungeFeed?: string;
+}
+
 export interface CamProcess {
   readonly id: string;
   readonly name: string;
   readonly setupId: string;
   readonly kind: "profile";
   readonly contour?: CamGeometryRef;
+  readonly profile?: CircularProfileSettings;
   readonly track?: { readonly unitId: string; readonly id: string };
 }
 

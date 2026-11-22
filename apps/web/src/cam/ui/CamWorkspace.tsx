@@ -1,7 +1,7 @@
 import { useState } from "react";
 import {
-  addPlanStage, addProcess, addSetup, createProject, getProcessPlan, validateProject,
-  type CamMachiningStage, type CamPlanItem, type CamPlanStage,
+  addPlanStage, addProcess, addSetup, getProcessPlan, validateProject,
+  type CamMachiningStage, type CamPlanItem, type CamPlanStage, type CamProject, type CircularProfileSettings,
 } from "@whittle/cam";
 import type { CamCadAdapter } from "../cadAdapter";
 import { demoMachine, demoTracks, trackKey } from "../machine";
@@ -19,15 +19,16 @@ function itemKey(item: CamPlanItem) {
   return item.kind === "process" ? `process:${item.processId}` : `stage:${item.id}`;
 }
 
-export function useCamWorkspace(cad: CamCadAdapter, documentId: string | undefined, openProperties: () => void) {
-  const [project, setProject] = useState(() => createProject("Manufacturing project"));
-  const [selectedKey, setSelectedKey] = useState<string>();
-  const [draftDocumentId, setDraftDocumentId] = useState(documentId);
-  if (draftDocumentId !== documentId) {
-    setDraftDocumentId(documentId);
-    setProject(createProject("Manufacturing project"));
-    setSelectedKey(undefined);
-  }
+export function useCamWorkspace(
+  cad: CamCadAdapter,
+  project: CamProject,
+  setProject: (update: (current: CamProject) => CamProject, label: string, mergeKey?: string) => void,
+  openProperties: () => void,
+) {
+  const [selection, setSelection] = useState<{ documentId?: string; key?: string }>({});
+  const documentId = project.setups[0]?.part.documentId;
+  const selectedKey = selection.documentId === documentId ? selection.key : undefined;
+  const setSelectedKey = (key?: string) => setSelection({ documentId, key });
 
   const plan = getProcessPlan(project);
   const selectedItem = plan.find((item) => itemKey(item) === selectedKey);
@@ -46,7 +47,7 @@ export function useCamWorkspace(cad: CamCadAdapter, documentId: string | undefin
     if (!part || !geometry) return;
     setProject((current) => current.setups.length ? current : addSetup(current, {
       id: "setup-1", name: "Setup 1", part,
-    }));
+    }), "Create manufacturing setup");
   }
 
   function createProfile() {
@@ -57,14 +58,14 @@ export function useCamWorkspace(cad: CamCadAdapter, documentId: string | undefin
       ?? (setup.part.kind === "sketch" ? setup.part : undefined);
     setProject((current) => addProcess(current, {
       id, name: `Profile ${number}`, setupId: setup.id, kind: "profile", contour,
-    }));
+    }), "Add circular profile");
     setSelectedKey(`process:${id}`);
   }
 
   function createStage(kind: CamPlanStage["kind"]) {
     if (!setup) return;
     const id = `stage-${plan.length + 1}`;
-    setProject((current) => addPlanStage(current, { id, kind, setupId: setup.id }));
+    setProject((current) => addPlanStage(current, { id, kind, setupId: setup.id }), `Add ${stageLabels[kind].toLowerCase()}`);
     setSelectedKey(`stage:${id}`);
   }
 
@@ -73,7 +74,7 @@ export function useCamWorkspace(cad: CamCadAdapter, documentId: string | undefin
       ...current,
       processPlan: getProcessPlan(current).map((item) =>
         item.kind === "process" && itemKey(item) === selectedKey ? { ...item, stage } : item),
-    }));
+    }), "Change machining stage");
   }
 
   function changeTrack(key: string) {
@@ -84,7 +85,17 @@ export function useCamWorkspace(cad: CamCadAdapter, documentId: string | undefin
         ...item,
         track: assignment && { unitId: assignment.unitId, id: assignment.id },
       } : item),
-    }));
+    }), "Assign execution track");
+  }
+
+  function changeProfile(settings: Partial<CircularProfileSettings>) {
+    if (!process) return;
+    setProject((current) => ({
+      ...current,
+      processes: current.processes.map((item) => item.id === process.id
+        ? { ...item, profile: { ...item.profile, ...settings } }
+        : item),
+    }), "Edit circular profile", `cam:${process.id}:${Object.keys(settings)[0]}`);
   }
 
   function selectTile(key?: string) {
@@ -132,8 +143,11 @@ export function useCamWorkspace(cad: CamCadAdapter, documentId: string | undefin
           {unit && <><dt>Execution unit</dt><dd>{unit.name}</dd></>}
         </>}
       </dl>
-      {process && cad.resolveCircularProfile && <ProfileExport key={process.id}
-        name={process.id} resolve={() => process.contour && cad.resolveCircularProfile?.(process.contour)} />}
+      {process && !process.contour && <p>Select a sketch with one circle before adding a profile to export APT-CL.</p>}
+      {process?.contour && <ProfileExport key={`${documentId}/${process.id}`}
+        name={process.id} settings={process.profile} onChange={changeProfile} datums={cad.getCoordinateSystems()}
+        resolveDatum={cad.resolveCoordinateSystem}
+        resolve={() => process.contour && cad.resolveCircularProfile?.(process.contour)} />}
       {setup && !selectedItem && (
         <div className="cam-properties__actions">
           <button type="button" onClick={() => createStage("transfer")}>Add transfer</button>

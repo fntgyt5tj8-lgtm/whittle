@@ -1,4 +1,4 @@
-export type { CamGeometryRef, CamMachiningStage, CamPlanItem, CamPlanStage, CamProcess, CamProject, CamResult, CamSetup, FlatEndmill } from "./model";
+export type { CamGeometryRef, CamMachiningStage, CamPlanItem, CamPlanStage, CamProcess, CamProject, CamResult, CamSetup, CircularProfileSettings, FlatEndmill } from "./model";
 export { addPlanStage, addProcess, addSetup, createProject, getProcessPlan } from "./operations";
 export { validateProject } from "./validation";
 export { CAM_WORLD, isCamFrame, transformCamVector } from "./geometry/frames";

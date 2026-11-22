@@ -10,7 +10,20 @@ const browser = await chromium.launch({
 
 try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
-  await page.addInitScript(() => localStorage.setItem("whittle.debug", "1"));
+  await page.addInitScript(() => {
+    localStorage.setItem("whittle.debug", "1");
+    let file;
+    const handle = {
+      name: "manufacturing-regression.whittle",
+      createWritable: async () => ({
+        write: async (bytes) => { file = new File([bytes], handle.name); },
+        close: async () => {},
+      }),
+      getFile: async () => file,
+    };
+    window.showSaveFilePicker = async () => handle;
+    window.showOpenFilePicker = async () => [handle];
+  });
   await page.goto(url);
   await page.getByRole("button", { name: /Maker & hobbyist/ }).click();
   await page.getByRole("button", { name: /Mounting plate/ }).click();
@@ -112,16 +125,80 @@ try {
   await properties.getByLabel("Cut feed (mm/min)").fill("200");
   await properties.getByLabel("Plunge feed (mm/min)").fill("50");
 
-  const downloadPromise = page.waitForEvent("download");
-  await properties.getByRole("button", { name: "Export APT-CL" }).click();
-  const download = await downloadPromise;
-  assert.equal(download.suggestedFilename(), "profile-3.apt");
-  const apt = await readFile(await download.path(), "utf8");
+  async function exportProfile() {
+    const downloadPromise = page.waitForEvent("download");
+    await properties.getByRole("button", { name: "Export APT-CL" }).click();
+    const download = await downloadPromise;
+    assert.equal(download.suggestedFilename(), "profile-3.apt");
+    return readFile(await download.path(), "utf8");
+  }
+
+  const apt = await exportProfile();
   assert.match(apt, /^FROM\/12,3,5,0,0,1$/m);
   assert.match(apt, /^CIRCLE\/2,3,-2,0,0,1,10$/m);
   assert.equal([...apt.matchAll(/^CIRCLE\//gm)].length, 4);
   assert.match(apt, /^RAPID\nGOTO\/12,3,5,0,0,1\nFINI\n$/m);
   console.log("ok  Manufacturing circular profile and APT-CL download");
+
+  const datumId = "cam-native-csys";
+  await page.evaluate((id) => {
+    window.whittle.useApp.setState(({ doc }) => ({
+      doc: { ...doc, features: [...doc.features, {
+        id, type: "csys", name: "Fixture CSYS", position: ["10", "20", "1"],
+        rotation: ["0", "0", "90 deg"], mode: "manual", refs: {}, flipZ: false, flipX: false,
+      }] },
+    }));
+  }, datumId);
+  await properties.getByLabel("Workpiece CSYS").selectOption({ label: "Fixture CSYS" });
+  const datumApt = await exportProfile();
+  function assertCoordinates(apt, record, expectedCoordinates) {
+    const line = apt.split("\n").find((item) => item.startsWith(`${record}/`));
+    assert.ok(line, `Expected a ${record} record`);
+    const actual = line.slice(record.length + 1).split(",").map(Number);
+    assert.equal(actual.length, expectedCoordinates.length);
+    for (const [index, coordinate] of expectedCoordinates.entries()) {
+      assert.ok(Math.abs(actual[index] - coordinate) < 1e-9, `${record} coordinates: ${actual}`);
+    }
+  }
+  assertCoordinates(datumApt, "FROM", [-17, -2, 14, 0, 0, 1]);
+  assertCoordinates(datumApt, "CIRCLE", [-17, 8, 7, 0, 0, 1, 10]);
+  assert.equal([...datumApt.matchAll(/^CIRCLE\//gm)].length, 4);
+
+  const command = (id) => page.evaluate((id) => window.whittle.commands.find((item) => item.id === id).run(), id);
+  await command("save");
+  await page.waitForFunction(() => {
+    const { fileName, dirty } = window.whittle.useApp.getState();
+    return fileName === "manufacturing-regression.whittle" && !dirty;
+  });
+  // Change the live project so reopening must restore it from the saved bytes.
+  await properties.getByLabel("Workpiece CSYS").selectOption("world");
+  await page.evaluate(() => window.whittle.useApp.setState({ dirty: false }));
+  await command("open");
+  await page.getByText("Opened manufacturing-regression.whittle", { exact: true }).waitFor();
+  await manufacturing.click();
+  assert.deepEqual(await tiles.allTextContents(), [...expected, "Profile 3 · Main machining"]);
+  await history.getByRole("button", { name: "Profile 3 · Main machining" }).click();
+  assert.equal(await properties.getByLabel("Workpiece CSYS").inputValue(), `datum:${datumId}`);
+  assert.equal(await properties.getByLabel("Flat endmill diameter (mm)").inputValue(), "4");
+  assert.equal(await exportProfile(), datumApt);
+
+  await page.evaluate((id) => window.whittle.useApp.setState(({ doc }) => ({
+    doc: { ...doc, features: doc.features.map((feature) => feature.id === id
+      ? { ...feature, position: ["10", "22", "1"] } : feature) },
+  })), datumId);
+  assertCoordinates(await exportProfile(), "FROM", [-19, -2, 14, 0, 0, 1]);
+
+  // Keep the reference visible and refuse export if the underlying datum disappears.
+  await page.evaluate((id) => window.whittle.useApp.setState(({ doc }) => ({
+    doc: { ...doc, features: doc.features.filter((feature) => feature.id !== id) },
+  })), datumId);
+  assert.equal(await properties.getByLabel("Workpiece CSYS").inputValue(), `datum:${datumId}`);
+  const unexpectedDownload = () => assert.fail("A missing datum must not export APT-CL");
+  page.on("download", unexpectedDownload);
+  await properties.getByRole("button", { name: "Export APT-CL" }).click();
+  await properties.getByRole("alert").getByText(/selected coordinate system is unavailable/).waitFor();
+  page.off("download", unexpectedDownload);
+  console.log("ok  Native CSYS transformation, file save/reopen, and missing datum handling");
 } finally {
   await browser.close();
 }

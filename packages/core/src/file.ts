@@ -8,6 +8,7 @@
  *   imports/<id>.bin  an embedded STEP/STL/Whittle file as raw bytes (inside the document it is base64, 4/3 the size)
  */
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate";
+import { isCamProject } from "../../cam/src/validation";
 import { SCHEMA_VERSION, type WhittleDocument } from "./model";
 import { FEATURE_LABELS, uid } from "./factory";
 import { version } from "../../../package.json";
@@ -196,6 +197,9 @@ export function migrate(input: unknown): WhittleDocument {
     if (bad) throw new FileFormatError(`The parameter name "${String(bad.name)}" isn't valid (letters, digits and _; not starting with a digit).`);
   }
   if (doc.id !== undefined && typeof doc.id !== "string") delete doc.id;
+  if (doc.manufacturing !== undefined && !isCamProject(doc.manufacturing)) {
+    throw new FileFormatError("The document’s manufacturing data is damaged or uses an unsupported version.");
+  }
   const d = doc as unknown as WhittleDocument;
   d.schema = SCHEMA_VERSION;
   d.parameters ??= [];

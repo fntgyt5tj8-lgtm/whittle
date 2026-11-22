@@ -1,10 +1,14 @@
+import type { Draft } from "immer";
+import { createProject, type CamProject } from "@whittle/cam";
 import type { ReactNode } from "react";
 import { manufacturingLabel, useCamWorkspace } from "./ui/CamWorkspace";
-import { isNarrow, useApp } from "../state/store";
+import { isNarrow, mutate, useApp } from "../state/store";
 import { Toolbar } from "../ui/Chrome";
 import { PropertiesPanel } from "../ui/PropertiesPanel";
 import { Timeline } from "../ui/Timeline";
 import { whittleCad } from "./whittleCad";
+
+const emptyProject = createProject("Manufacturing project");
 
 export function ManufacturingSlots({ enabled, children }: { enabled: boolean; children: ReactNode }) {
   // The adapter reads current store state. Subscribe to the inputs that affect its answers.
@@ -14,7 +18,14 @@ export function ManufacturingSlots({ enabled, children }: { enabled: boolean; ch
   useApp((s) => s.builtDoc);
   const active = useApp((s) => s.ribbonTab === "manufacturing") && enabled;
   const openProperties = () => useApp.setState({ panelOpen: true, ...(isNarrow() ? { browserOpen: false } : {}) });
-  const cam = useCamWorkspace(whittleCad, doc.id, openProperties);
+  function saveProject(update: (current: CamProject) => CamProject, label: string, mergeKey?: string) {
+    const current = useApp.getState().doc.manufacturing ?? emptyProject;
+    const next = update(current);
+    if (next !== current) {
+      mutate(label, (draft) => { draft.manufacturing = next as Draft<CamProject>; }, mergeKey);
+    }
+  }
+  const cam = useCamWorkspace(whittleCad, doc.manufacturing ?? emptyProject, saveProject, openProperties);
   const ribbon = enabled ? {
     label: manufacturingLabel,
     activate: () => useApp.setState({ ribbonTab: "manufacturing", ...(isNarrow() ? { panelOpen: false } : {}) }),
