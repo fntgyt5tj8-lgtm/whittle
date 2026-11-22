@@ -37,7 +37,7 @@ try {
   await manufacturing.click();
   const timeline = page.getByLabel("Manufacturing timeline");
   const setup = page.getByRole("button", { name: "Create setup" });
-  assert.equal(await setup.isDisabled(), true);
+  assert.equal(await setup.isEnabled(), true);
   const history = timeline.getByRole("list", { name: "Part history" });
   const tiles = history.getByRole("button");
   assert.equal(await tiles.count(), 0);
@@ -47,12 +47,47 @@ try {
     const bodyId = app.getState().regen.bodies[0].id;
     app.setState({ selection: [{ kind: "body", bodyId }] });
   });
+  const frames = [
+    { id: "cam-main", name: "Main CSYS", position: ["0", "0", "10"], rotation: ["0", "0", "0"] },
+    { id: "cam-sub-horizontal", name: "Sub Horizontal CSYS", position: ["10", "20", "1"], rotation: ["0", "0", "90 deg"] },
+    { id: "cam-sub-vertical", name: "Sub Vertical CSYS", position: ["0", "0", "0"], rotation: ["90 deg", "0", "0"] },
+  ];
+  await page.evaluate((frames) => {
+    window.whittle.useApp.setState(({ doc }) => ({
+      doc: { ...doc, features: [...doc.features, ...frames.map((frame) => ({
+        ...frame, type: "csys", mode: "manual", refs: {}, flipZ: false, flipX: false,
+      }))] },
+    }));
+  }, frames);
   await setup.click();
   const properties = page.getByRole("complementary", { name: "Manufacturing properties" });
   await properties.getByRole("heading", { name: "Setup 1" }).waitFor();
 
+  const setupName = properties.getByLabel("Setup name");
+  await setupName.fill("Primary machining");
+  await setup.click();
+  await setupName.fill("Temporary setup");
+  await properties.getByRole("button", { name: "Delete setup" }).click();
+  assert.equal(await history.getByRole("button", { name: "Temporary setup" }).count(), 0);
+
+  const contextPicker = properties.getByLabel("Workpiece context");
+  for (const [index, name] of ["Main", "Sub Horizontal", "Sub Vertical"].entries()) {
+    await properties.getByLabel("New context CSYS").selectOption(frames[index].id);
+    await properties.getByRole("button", { name: "Add context" }).click();
+    await properties.getByLabel("Context name").fill(name);
+  }
+  const contextIds = await contextPicker.locator("option").evaluateAll((options) => options.map((option) => option.value));
+  assert.equal(new Set(contextIds).size, 3);
+  await properties.getByLabel("Selected body role").selectOption("fixture");
+  await properties.getByRole("button", { name: "Assign selected bodies" }).click();
+  await properties.getByRole("list", { name: "Assigned bodies" }).getByText(/fixture/).waitFor();
+  await contextPicker.selectOption({ label: "Sub Horizontal" });
+  await properties.getByLabel("Selected body role").selectOption("stock");
+  await properties.getByRole("button", { name: "Assign selected bodies" }).click();
+  await contextPicker.selectOption({ label: "Main" });
+
   const addProfile = page.getByRole("button", { name: "Add profile" });
-  const setupTile = history.getByRole("button", { name: "Setup 1" });
+  const setupTile = history.getByRole("button", { name: "Primary machining" });
   const track = properties.getByLabel("Execution track");
   const machiningStage = properties.getByLabel("Machining stage");
 
@@ -74,7 +109,7 @@ try {
   await properties.getByRole("button", { name: "Add ejection" }).click();
   await properties.getByRole("heading", { name: "Ejection" }).waitFor();
 
-  const expected = ["Setup 1", "Profile 1 · Main machining", "Transfer", "Profile 2 · Sub / back-working", "Ejection"];
+  const expected = ["Primary machining", "Profile 1 · Main machining", "Transfer", "Profile 2 · Sub / back-working", "Ejection"];
   assert.deepEqual(await tiles.allTextContents(), expected);
   const topPositions = await tiles.evaluateAll((buttons) => buttons.map((button) => button.getBoundingClientRect().top));
   assert.equal(new Set(topPositions).size, 1);
@@ -118,7 +153,6 @@ try {
   await manufacturing.click();
   await addProfile.click();
   await properties.getByRole("heading", { name: "Profile 3" }).waitFor();
-  await properties.getByLabel("Workpiece CSYS").selectOption("sketch");
   await properties.getByLabel("Flat endmill diameter (mm)").fill("4");
   await properties.getByLabel("Cut depth (mm)").fill("2");
   await properties.getByLabel("Clearance above sketch (mm)").fill("5");
@@ -129,7 +163,7 @@ try {
     const downloadPromise = page.waitForEvent("download");
     await properties.getByRole("button", { name: "Export APT-CL" }).click();
     const download = await downloadPromise;
-    assert.equal(download.suggestedFilename(), "profile-3.apt");
+    assert.match(download.suggestedFilename(), /^profile.*\.apt$/);
     return readFile(await download.path(), "utf8");
   }
 
@@ -140,16 +174,12 @@ try {
   assert.match(apt, /^RAPID\nGOTO\/12,3,5,0,0,1\nFINI\n$/m);
   console.log("ok  Manufacturing circular profile and APT-CL download");
 
-  const datumId = "cam-native-csys";
-  await page.evaluate((id) => {
-    window.whittle.useApp.setState(({ doc }) => ({
-      doc: { ...doc, features: [...doc.features, {
-        id, type: "csys", name: "Fixture CSYS", position: ["10", "20", "1"],
-        rotation: ["0", "0", "90 deg"], mode: "manual", refs: {}, flipZ: false, flipX: false,
-      }] },
-    }));
-  }, datumId);
-  await properties.getByLabel("Workpiece CSYS").selectOption({ label: "Fixture CSYS" });
+  const datumId = frames[1].id;
+  await contextPicker.selectOption({ label: "Sub Vertical" });
+  const verticalApt = await exportProfile();
+  assertCoordinates(verticalApt, "FROM", [12, 15, -3, 0, 1, 0]);
+  assert.equal([...verticalApt.matchAll(/^CIRCLE\//gm)].length, 4);
+  await contextPicker.selectOption({ label: "Sub Horizontal" });
   const datumApt = await exportProfile();
   function assertCoordinates(apt, record, expectedCoordinates) {
     const line = apt.split("\n").find((item) => item.startsWith(`${record}/`));
@@ -171,16 +201,33 @@ try {
     return fileName === "manufacturing-regression.whittle" && !dirty;
   });
   // Change the live project so reopening must restore it from the saved bytes.
-  await properties.getByLabel("Workpiece CSYS").selectOption("world");
+  await contextPicker.selectOption({ label: "Main" });
   await page.evaluate(() => window.whittle.useApp.setState({ dirty: false }));
   await command("open");
   await page.getByText("Opened manufacturing-regression.whittle", { exact: true }).waitFor();
   await manufacturing.click();
   assert.deepEqual(await tiles.allTextContents(), [...expected, "Profile 3 · Main machining"]);
   await history.getByRole("button", { name: "Profile 3 · Main machining" }).click();
-  assert.equal(await properties.getByLabel("Workpiece CSYS").inputValue(), `datum:${datumId}`);
+  assert.equal(await contextPicker.inputValue(), contextIds[1]);
   assert.equal(await properties.getByLabel("Flat endmill diameter (mm)").inputValue(), "4");
   assert.equal(await exportProfile(), datumApt);
+
+  const savedContexts = await page.evaluate(() => {
+    const { doc } = window.whittle.useApp.getState();
+    return doc.manufacturing.setups[0].contexts;
+  });
+  assert.deepEqual(savedContexts.map((context) => context.id), contextIds);
+  assert.equal(new Set(savedContexts.flatMap((context) => context.bodies.map(({ body }) => body.entityId))).size, 1);
+  assert.deepEqual(savedContexts.map((context) => context.bodies.map(({ role }) => role)),
+    [["workpiece"], ["workpiece", "stock"], ["workpiece", "fixture"]]);
+  await setupTile.click();
+  assert.equal(await properties.getByRole("button", { name: "Delete setup" }).isDisabled(), true);
+  await contextPicker.selectOption({ label: "Sub Horizontal" });
+  assert.equal(await properties.getByRole("button", { name: "Delete context" }).isDisabled(), true);
+  await contextPicker.selectOption({ label: "Sub Vertical" });
+  await properties.getByRole("button", { name: "Delete context" }).click();
+  assert.equal(await contextPicker.locator("option").count(), 2);
+  await history.getByRole("button", { name: "Profile 3 · Main machining" }).click();
 
   await page.evaluate((id) => window.whittle.useApp.setState(({ doc }) => ({
     doc: { ...doc, features: doc.features.map((feature) => feature.id === id
@@ -192,13 +239,22 @@ try {
   await page.evaluate((id) => window.whittle.useApp.setState(({ doc }) => ({
     doc: { ...doc, features: doc.features.filter((feature) => feature.id !== id) },
   })), datumId);
-  assert.equal(await properties.getByLabel("Workpiece CSYS").inputValue(), `datum:${datumId}`);
+  assert.equal(await contextPicker.inputValue(), contextIds[1]);
   const unexpectedDownload = () => assert.fail("A missing datum must not export APT-CL");
   page.on("download", unexpectedDownload);
   await properties.getByRole("button", { name: "Export APT-CL" }).click();
-  await properties.getByRole("alert").getByText(/selected coordinate system is unavailable/).waitFor();
+  await properties.getByRole("alert").getByText(/context coordinate system is unavailable/).waitFor();
   page.off("download", unexpectedDownload);
-  console.log("ok  Native CSYS transformation, file save/reopen, and missing datum handling");
+  await setupTile.click();
+  await platformMissingBody();
+  await properties.getByRole("alert").getByText(/unavailable workpiece body/).first().waitFor();
+  console.log("ok  Multiple workpiece contexts, shared roles, native CSYS transforms, save/reopen and broken references");
+
+  async function platformMissingBody() {
+    await page.evaluate(() => window.whittle.useApp.setState(({ doc }) => ({
+      doc: { ...doc, bodies: {} },
+    })));
+  }
 } finally {
   await browser.close();
 }
