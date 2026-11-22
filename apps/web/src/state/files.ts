@@ -569,12 +569,21 @@ export async function openVersionAsCopy(item: VersionItem) {
     doc.id = documentId;
     const project = doc.manufacturing;
     if (project) {
+      const rebase = <T extends { readonly documentId: string }>(ref: T): T =>
+        ref.documentId === sourceId ? { ...ref, documentId } : ref;
       doc.manufacturing = {
         ...project,
-        setups: project.setups.map((setup) => setup.part.documentId === sourceId
-          ? { ...setup, part: { ...setup.part, documentId } } : setup),
-        processes: project.processes.map((process) => process.contour?.documentId === sourceId && process.contour
-          ? { ...process, contour: { ...process.contour, documentId } } : process),
+        setups: project.setups.map((setup) => ({
+          ...setup,
+          part: setup.part && rebase(setup.part),
+          contexts: setup.contexts?.map((context) => ({
+            ...context,
+            frame: context.frame.kind === "legacy-sketch" && context.frame.sketch
+              ? { ...context.frame, sketch: rebase(context.frame.sketch) } : context.frame,
+            bodies: context.bodies.map((assignment) => ({ ...assignment, body: rebase(assignment.body) })),
+          })),
+        })),
+        processes: project.processes.map((process) => ({ ...process, contour: process.contour && rebase(process.contour) })),
       };
     }
     doc.name = `${doc.name} (${new Date(item.at).toLocaleString()})`;

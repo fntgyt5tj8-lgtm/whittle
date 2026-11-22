@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { addPlanStage, addProcess, addSetup, createProject, getProcessPlan, validateProject, type CamSetup } from "../src";
+import { addPlanStage, addProcess, addSetup, createProject, getProcessPlan, migrateWorkpieceContexts, validateProject, type CamSetup } from "../src";
 
 const setup: CamSetup = {
   id: "setup-1",
@@ -74,5 +74,43 @@ describe("CAM project", () => {
       "Setup IDs must be present and unique.",
       "Each process needs an existing setup.",
     ]);
+  });
+});
+
+describe("Phase 01 workpiece migration", () => {
+  it("groups matching frames and retains distinct sketch origins and native IDs", () => {
+    const body = { documentId: "document-1", kind: "body", entityId: "stock" } as const;
+    const contour = setup.part;
+    const legacy = {
+      ...createProject("Bracket"),
+      setups: [{ ...setup, part: body }],
+      processPlan: undefined,
+      processes: [
+        { ...profile, id: "world" },
+        { ...profile, id: "also-world", profile: { csys: "world", depth: "2" } },
+        { ...profile, id: "sketch", contour, profile: { csys: "sketch" } },
+        { ...profile, id: "other-sketch", contour: { ...contour!, entityId: "sketch-2" }, profile: { csys: "sketch" } },
+        { ...profile, id: "datum", profile: { csys: "datum:fixture", side: "inside" } },
+      ],
+    } as const;
+    const migrated = migrateWorkpieceContexts(legacy);
+    const migratedSetup = migrated.setups[0]!;
+    const contexts = migratedSetup.contexts!;
+    const [world, sketch, otherSketch, datum] = contexts;
+    expect(contexts.map(({ frame }) => frame)).toEqual([
+      { kind: "legacy-world" }, { kind: "legacy-sketch", sketch: contour },
+      { kind: "legacy-sketch", sketch: legacy.processes[3].contour }, { kind: "native", csysId: "fixture" },
+    ]);
+    expect(contexts.every(({ bodies }) => bodies[0]?.body.entityId === body.entityId)).toBe(true);
+    expect(migrated.processes.map(({ contextId }) => contextId)).toEqual([
+      world?.id, world?.id, sketch?.id, otherSketch?.id, datum?.id,
+    ]);
+    expect(migrated.processes[1]?.profile).toEqual({ depth: "2" });
+    expect(migrated.processes[4]?.profile).toEqual({ side: "inside" });
+    expect(getProcessPlan(migrated)).toEqual(getProcessPlan(legacy));
+    expect(migrateWorkpieceContexts(migrated)).toBe(migrated);
+    expect(validateProject(migrated)).toEqual([]);
+    expect(validateProject({ ...migrated, setups: [{ ...migratedSetup, contexts: contexts.slice(0, 3) }] }))
+      .toContain("Profile 1 needs an existing workpiece context in its setup.");
   });
 });

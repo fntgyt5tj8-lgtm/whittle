@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { CAM_WORLD, exportAptCl, generateCircularProfile, type CamFrame, type CircularProfileGeometry, type CircularProfileSettings } from "@whittle/cam";
+import { exportAptCl, generateCircularProfile, type CamFrame, type CircularProfileGeometry, type CircularProfileSettings } from "@whittle/cam";
 
 const dimensions = [
   ["diameter", "Flat endmill diameter (mm)"],
@@ -9,18 +9,15 @@ const dimensions = [
   ["plungeFeed", "Plunge feed (mm/min)"],
 ] as const;
 
-export function ProfileExport({ name, resolve, settings = {}, onChange, datums, resolveDatum }: {
+export function ProfileExport({ name, resolve, settings = {}, onChange, resolveFrame }: {
   name: string;
   settings?: CircularProfileSettings;
   onChange: (settings: Partial<CircularProfileSettings>) => void;
-  datums: readonly { id: string; name: string }[];
-  resolveDatum: (id: string) => CamFrame | undefined;
+  resolveFrame: () => CamFrame | undefined;
   resolve: () => CircularProfileGeometry | undefined;
 }) {
   const [errors, setErrors] = useState<readonly string[]>([]);
   const geometryAvailable = !!resolve();
-  const csys = settings.csys ?? "world";
-  const missingDatum = csys !== "world" && csys !== "sketch" && !datums.some((datum) => `datum:${datum.id}` === csys);
 
   function download(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -30,10 +27,9 @@ export function ProfileExport({ name, resolve, settings = {}, onChange, datums, 
       return;
     }
 
-    const workpieceCsys = csys === "world" ? CAM_WORLD
-      : csys === "sketch" ? geometry.operationFrame : resolveDatum(csys.slice("datum:".length));
+    const workpieceCsys = resolveFrame();
     if (!workpieceCsys) {
-      setErrors(["The selected coordinate system is unavailable. Repair the datum or select another coordinate system."]);
+      setErrors(["The context coordinate system is unavailable. Repair the datum or select another workpiece context."]);
       return;
     }
 
@@ -69,14 +65,6 @@ export function ProfileExport({ name, resolve, settings = {}, onChange, datums, 
     <form onSubmit={download} onChange={() => setErrors([])}>
       {!geometryAvailable && <p>The profile sketch must be built and contain one circle.</p>}
       <dl>
-        <dt><label htmlFor="cam-profile-csys">Workpiece CSYS</label></dt>
-        <dd><select id="cam-profile-csys" value={csys}
-          onChange={(event) => onChange({ csys: event.target.value as CircularProfileSettings["csys"] })}>
-          <option value="world">Document origin</option>
-          <option value="sketch">Sketch origin and axes</option>
-          {datums.map((datum) => <option key={datum.id} value={`datum:${datum.id}`}>{datum.name}</option>)}
-          {missingDatum && <option value={csys}>Coordinate system unavailable</option>}
-        </select></dd>
         <dt><label htmlFor="cam-profile-side">Profile side</label></dt>
         <dd><select id="cam-profile-side" name="side" value={settings.side ?? "outside"}
           onChange={(event) => onChange({ side: event.target.value === "inside" ? "inside" : "outside" })}>

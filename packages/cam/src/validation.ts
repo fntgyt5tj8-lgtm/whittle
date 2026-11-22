@@ -4,13 +4,30 @@ export function validateProject(project: CamProject): string[] {
   const errors: string[] = [];
   if (!project.name.trim()) errors.push("Enter a project name.");
 
+  const contextIds = new Set<string>();
   const setupIds = new Set<string>();
   for (const setup of project.setups) {
     if (!setup.id.trim() || setupIds.has(setup.id)) errors.push("Setup IDs must be present and unique.");
     setupIds.add(setup.id);
     if (!setup.name.trim()) errors.push("Enter a name for each setup.");
-    if (!setup.part.documentId.trim() || !setup.part.entityId.trim()) {
+    if (setup.part && (!setup.part.documentId.trim() || !setup.part.entityId.trim())) {
       errors.push("Each setup needs a CAD document and part reference.");
+    }
+    for (const context of setup.contexts ?? []) {
+      if (!context.id.trim() || contextIds.has(context.id)) errors.push("Workpiece context IDs must be present and unique.");
+      contextIds.add(context.id);
+      if (!context.name.trim()) errors.push("Enter a name for each workpiece context.");
+      if (context.frame.kind === "native" && !context.frame.csysId.trim()) {
+        errors.push(`${context.name} needs a native coordinate system.`);
+      }
+      const assignments = new Set<string>();
+      for (const { body, role } of context.bodies) {
+        const key = JSON.stringify([body.documentId, body.entityId, role]);
+        if (!body.documentId.trim() || !body.entityId.trim() || assignments.has(key)) {
+          errors.push(`${context.name} needs valid, unique body assignments.`);
+        }
+        assignments.add(key);
+      }
     }
   }
 
@@ -19,7 +36,11 @@ export function validateProject(project: CamProject): string[] {
     if (!process.id.trim() || processIds.has(process.id)) errors.push("Process IDs must be present and unique.");
     processIds.add(process.id);
     if (!process.name.trim()) errors.push("Enter a name for each process.");
-    if (!setupIds.has(process.setupId)) errors.push("Each process needs an existing setup.");
+    const setup = project.setups.find((item) => item.id === process.setupId);
+    if (!setup) errors.push("Each process needs an existing setup.");
+    if (setup?.contexts && !setup.contexts.some((item) => item.id === process.contextId)) {
+      errors.push(`${process.name} needs an existing workpiece context in its setup.`);
+    }
   }
   if (project.processPlan) {
     const plannedProcesses = new Set<string>();
@@ -48,6 +69,13 @@ export function isCamProject(value: unknown): value is CamProject {
     !!item && typeof item === "object" && !Array.isArray(item);
   const geometry = (item: unknown) => record(item) && typeof item.documentId === "string"
     && typeof item.entityId === "string" && (item.kind === "body" || item.kind === "sketch");
+  const context = (item: unknown) => record(item) && typeof item.id === "string" && typeof item.name === "string"
+    && record(item.frame) && (item.frame.kind === "legacy-world"
+      || (item.frame.kind === "legacy-sketch" && (item.frame.sketch === undefined || geometry(item.frame.sketch)))
+      || (item.frame.kind === "native" && typeof item.frame.csysId === "string"))
+    && Array.isArray(item.bodies) && item.bodies.every((assignment) => record(assignment)
+      && record(assignment.body) && geometry(assignment.body) && assignment.body.kind === "body"
+      && (assignment.role === "workpiece" || assignment.role === "stock" || assignment.role === "fixture"));
   const profile = (item: unknown) => record(item)
     && (item.csys === undefined || item.csys === "world" || item.csys === "sketch"
       || (typeof item.csys === "string" && item.csys.startsWith("datum:") && item.csys.length > 6))
@@ -58,9 +86,12 @@ export function isCamProject(value: unknown): value is CamProject {
 
   return record(value) && value.schemaVersion === 1 && typeof value.name === "string"
     && Array.isArray(value.setups) && value.setups.every((item) => record(item)
-      && typeof item.id === "string" && typeof item.name === "string" && geometry(item.part))
+      && typeof item.id === "string" && typeof item.name === "string"
+      && (item.part === undefined || geometry(item.part))
+      && (item.contexts === undefined ? geometry(item.part) : Array.isArray(item.contexts) && item.contexts.every(context)))
     && Array.isArray(value.processes) && value.processes.every((item) => record(item)
       && typeof item.id === "string" && typeof item.name === "string" && typeof item.setupId === "string"
+      && (item.contextId === undefined || typeof item.contextId === "string")
       && item.kind === "profile" && (item.contour === undefined || geometry(item.contour))
       && (item.profile === undefined || profile(item.profile))
       && (item.track === undefined || (record(item.track)

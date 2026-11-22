@@ -1,5 +1,5 @@
 import type { Draft } from "immer";
-import { createProject, type CamProject } from "@whittle/cam";
+import { createProject, migrateWorkpieceContexts, type CamProject } from "@whittle/cam";
 import type { ReactNode } from "react";
 import { manufacturingLabel, useCamWorkspace } from "./ui/CamWorkspace";
 import { isNarrow, mutate, useApp } from "../state/store";
@@ -20,12 +20,12 @@ export function ManufacturingSlots({ enabled, children }: { enabled: boolean; ch
   const openProperties = () => useApp.setState({ panelOpen: true, ...(isNarrow() ? { browserOpen: false } : {}) });
   function saveProject(update: (current: CamProject) => CamProject, label: string, mergeKey?: string) {
     const current = useApp.getState().doc.manufacturing ?? emptyProject;
-    const next = update(current);
+    const next = update(migrateWorkpieceContexts(current));
     if (next !== current) {
       mutate(label, (draft) => { draft.manufacturing = next as Draft<CamProject>; }, mergeKey);
     }
   }
-  const cam = useCamWorkspace(whittleCad, doc.manufacturing ?? emptyProject, saveProject, openProperties);
+  const cam = useCamWorkspace(whittleCad, doc.id, migrateWorkpieceContexts(doc.manufacturing ?? emptyProject), saveProject, openProperties);
   const ribbon = enabled ? {
     label: manufacturingLabel,
     activate: () => useApp.setState({ ribbonTab: "manufacturing", ...(isNarrow() ? { panelOpen: false } : {}) }),

@@ -5,14 +5,35 @@ export interface CamGeometryRef {
   readonly entityId: string;
 }
 
+export type CamBodyRole = "workpiece" | "stock" | "fixture";
+
+export interface CamBodyAssignment {
+  readonly body: CamGeometryRef & { readonly kind: "body" };
+  readonly role: CamBodyRole;
+}
+
+export type CamContextFrame =
+  | { readonly kind: "native"; readonly csysId: string }
+  // Phase 01 files could use implicit frames with no native CAD feature.
+  | { readonly kind: "legacy-world" }
+  | { readonly kind: "legacy-sketch"; readonly sketch?: CamGeometryRef };
+
+export interface CamWorkpieceContext {
+  readonly id: string;
+  readonly name: string;
+  readonly frame: CamContextFrame;
+  readonly bodies: readonly CamBodyAssignment[];
+}
+
 export interface CamSetup {
   readonly id: string;
   readonly name: string;
-  readonly part: CamGeometryRef;
+  /** Phase 01 part reference, retained for sketch selection and compatibility. */
+  readonly part?: CamGeometryRef;
+  readonly contexts?: readonly CamWorkpieceContext[];
 }
 
 export interface CircularProfileSettings {
-  readonly csys?: "world" | "sketch" | `datum:${string}`;
   readonly side?: "inside" | "outside";
   readonly direction?: "cw" | "ccw";
   readonly diameter?: string;
@@ -28,7 +49,8 @@ export interface CamProcess {
   readonly setupId: string;
   readonly kind: "profile";
   readonly contour?: CamGeometryRef;
-  readonly profile?: CircularProfileSettings;
+  readonly contextId?: string;
+  readonly profile?: CircularProfileSettings & { readonly csys?: "world" | "sketch" | `datum:${string}` };
   readonly track?: { readonly unitId: string; readonly id: string };
 }
 

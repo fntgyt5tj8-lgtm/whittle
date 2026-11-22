@@ -1,10 +1,12 @@
 import { useState } from "react";
 import {
-  addPlanStage, addProcess, addSetup, getProcessPlan, validateProject,
-  type CamMachiningStage, type CamPlanItem, type CamPlanStage, type CamProject, type CircularProfileSettings,
+  CAM_WORLD, addPlanStage, addProcess, addSetup, getProcessPlan, validateProject,
+  type CamMachiningStage, type CamPlanItem, type CamPlanStage, type CamProject, type CamSetup, type CircularProfileSettings,
 } from "@whittle/cam";
 import type { CamCadAdapter } from "../cadAdapter";
 import { demoMachine, demoTracks, trackKey } from "../machine";
+import { uid } from "@whittle/core";
+import { SetupEditor } from "./SetupEditor";
 import { ProfileExport } from "./ProfileExport";
 import { MillIcon } from "./icons/MillIcon";
 import { PlanIcon } from "./icons/PlanIcon";
@@ -21,12 +23,13 @@ function itemKey(item: CamPlanItem) {
 
 export function useCamWorkspace(
   cad: CamCadAdapter,
+  documentId: string | undefined,
   project: CamProject,
   setProject: (update: (current: CamProject) => CamProject, label: string, mergeKey?: string) => void,
   openProperties: () => void,
 ) {
   const [selection, setSelection] = useState<{ documentId?: string; key?: string }>({});
-  const documentId = project.setups[0]?.part.documentId;
+  const [contextSelection, setContextSelection] = useState<{ setupId?: string; id?: string }>({});
   const selectedKey = selection.documentId === documentId ? selection.key : undefined;
   const setSelectedKey = (key?: string) => setSelection({ documentId, key });
 
@@ -36,28 +39,57 @@ export function useCamWorkspace(
     ? project.processes.find((item) => item.id === selectedItem.processId)
     : undefined;
   const setupId = selectedItem?.kind === "process" ? process?.setupId : selectedItem?.setupId;
-  const setup = project.setups.find((item) => item.id === setupId) ?? project.setups[0];
-  const part = setup?.part ?? cad.getSelection()[0];
-  const geometry = part && cad.resolveGeometry(part);
+  const setupKey = selectedKey?.startsWith("setup:") ? selectedKey.slice("setup:".length) : undefined;
+  const setup = project.setups.find((item) => item.id === (setupId ?? setupKey))
+    ?? (selectedItem ? undefined : project.setups[0]);
+  const contexts = setup?.contexts ?? [];
+  const context = process ? contexts.find((item) => item.id === process.contextId)
+    : (contextSelection.setupId === setup?.id ? contexts.find((item) => item.id === contextSelection.id) : undefined)
+      ?? contexts[0];
+  const selectContext = (id?: string) => setContextSelection({ setupId: setup?.id, id });
+  const usedContexts = new Set(project.processes.filter((item) => item.setupId === setup?.id).map((item) => item.contextId));
+  const setupInUse = !!usedContexts.size || plan.some((item) => item.kind !== "process" && item.setupId === setup?.id);
+  const frame = context?.frame;
+  function resolveFrame() {
+    if (frame?.kind === "native") return cad.resolveCoordinateSystem(frame.csysId);
+    if (frame?.kind === "legacy-world") return CAM_WORLD;
+    if (frame?.kind === "legacy-sketch" && frame.sketch) return cad.resolveSketchFrame(frame.sketch);
+  }
+
+  function editSetup(update: (current: CamSetup) => CamSetup, label: string, mergeKey?: string) {
+    setProject((current) => ({
+      ...current, setups: current.setups.map((item) => item.id === setup?.id ? update(item) : item),
+    }), label, mergeKey);
+  }
+
+  function deleteSetup() {
+    if (setupInUse) return;
+    setProject((current) => ({ ...current, setups: current.setups.filter((item) => item.id !== setup?.id) }),
+      "Delete manufacturing setup");
+    setSelectedKey();
+  }
+
   const assignedTrack = process?.track;
   const track = assignedTrack && demoTracks.find((item) => trackKey(item) === trackKey(assignedTrack));
   const unit = track && demoMachine.executionUnits.find((item) => item.id === track.unitId);
 
   function createSetup() {
-    if (!part || !geometry) return;
-    setProject((current) => current.setups.length ? current : addSetup(current, {
-      id: "setup-1", name: "Setup 1", part,
-    }), "Create manufacturing setup");
+    const id = uid("setup");
+    let number = project.setups.length + 1;
+    while (project.setups.some((setup) => setup.name === `Setup ${number}`)) number += 1;
+    setProject((current) => addSetup(current, { id, name: `Setup ${number}`, contexts: [] }),
+      "Create manufacturing setup");
+    setSelectedKey(`setup:${id}`);
   }
 
   function createProfile() {
-    if (!setup || !geometry) return;
+    if (!setup || !context) return;
     const number = project.processes.length + 1;
-    const id = `profile-${number}`;
+    const id = uid("profile");
     const contour = cad.getSelection().find((ref) => ref.kind === "sketch")
-      ?? (setup.part.kind === "sketch" ? setup.part : undefined);
+      ?? (setup.part?.kind === "sketch" ? setup.part : undefined);
     setProject((current) => addProcess(current, {
-      id, name: `Profile ${number}`, setupId: setup.id, kind: "profile", contour,
+      id, name: `Profile ${number}`, setupId: setup.id, contextId: context.id, kind: "profile", contour,
     }), "Add circular profile");
     setSelectedKey(`process:${id}`);
   }
@@ -104,21 +136,43 @@ export function useCamWorkspace(
   }
 
   const commands = [
-    { id: "setup", label: "Create setup", icon: MillIcon, enabled: !!geometry && !setup, run: createSetup },
-    { id: "profile", label: "Add profile", icon: MillIcon, enabled: !!setup && !!geometry, run: createProfile },
+    { id: "setup", label: "Create setup", icon: MillIcon, enabled: true, run: createSetup },
+    { id: "profile", label: "Add profile", icon: MillIcon, enabled: !!setup && !!context, run: createProfile },
   ];
   const selectedStage = selectedItem && selectedItem.kind !== "process" ? selectedItem : undefined;
   const errors = validateProject(project);
+  const datums = cad.getCoordinateSystems();
+  if (process?.contour && !cad.resolveGeometry(process.contour)) errors.push(`${process.name} references a missing profile sketch.`);
+  for (const item of project.setups.flatMap((item) => item.contexts ?? [])) {
+    if (item.frame.kind === "native" && item.frame.csysId) {
+      const csysId = item.frame.csysId;
+      if (!datums.some((datum) => datum.id === csysId)) errors.push(`${item.name} references a missing coordinate system.`);
+    }
+    if (item.frame.kind === "legacy-sketch" && (!item.frame.sketch || !cad.resolveGeometry(item.frame.sketch))) {
+      errors.push(`${item.name} references a missing sketch coordinate system.`);
+    }
+    for (const { body, role } of item.bodies) {
+      if (!cad.resolveGeometry(body)) errors.push(`${item.name} references an unavailable ${role} body (${body.entityId}).`);
+    }
+  }
 
   const properties = (
     <div className="cam-properties">
       <h2>{process?.name ?? (selectedStage && stageLabels[selectedStage.kind]) ?? setup?.name ?? manufacturingLabel}</h2>
       <p>{demoMachine.name} · {demoMachine.controller}</p>
       <dl>
-        <dt>Part geometry</dt>
-        <dd>{geometry?.name ?? (setup ? "Geometry unavailable" : "Select a body or sketch")}</dd>
         {selectedItem && <><dt>Setup</dt><dd>{setup?.name}</dd></>}
         {process && selectedItem?.kind === "process" && <>
+          <dt><label htmlFor="cam-process-context">Workpiece context</label></dt>
+          <dd><select id="cam-process-context" value={context?.id ?? ""} onChange={(event) => {
+            const contextId = event.target.value;
+            setProject((current) => ({
+              ...current, processes: current.processes.map((item) => item.id === process.id ? { ...item, contextId } : item),
+            }), "Change operation workpiece context");
+          }}>
+            {!context && <option value="" disabled>Workpiece context unavailable</option>}
+            {contexts.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+          </select></dd>
           <dt><label htmlFor="cam-machining-stage">Machining stage</label></dt>
           <dd><select id="cam-machining-stage" value={selectedItem.stage}
             onChange={(event) => changeMachiningStage(event.target.value as CamMachiningStage)}>
@@ -145,9 +199,11 @@ export function useCamWorkspace(
       </dl>
       {process && !process.contour && <p>Select a sketch with one circle before adding a profile to export APT-CL.</p>}
       {process?.contour && <ProfileExport key={`${documentId}/${process.id}`}
-        name={process.id} settings={process.profile} onChange={changeProfile} datums={cad.getCoordinateSystems()}
-        resolveDatum={cad.resolveCoordinateSystem}
+        name={process.id} settings={process.profile} onChange={changeProfile} resolveFrame={resolveFrame}
         resolve={() => process.contour && cad.resolveCircularProfile?.(process.contour)} />}
+      {setup && !selectedItem && <SetupEditor key={setup.id}
+        setup={setup} context={context} cad={cad} edit={editSetup} select={selectContext}
+        deleteSetup={deleteSetup} setupInUse={setupInUse} usedContexts={usedContexts} />}
       {setup && !selectedItem && (
         <div className="cam-properties__actions">
           <button type="button" onClick={() => createStage("transfer")}>Add transfer</button>
@@ -162,15 +218,15 @@ export function useCamWorkspace(
 
   const timeline = (
     <ol className="cam-timeline" role="list" aria-label="Part history">
-      {!setup && <li className="cam-timeline__empty">Select a body or sketch and create a setup.</li>}
-      {setup && (
-        <li>
-          <button className="cam-timeline__tile" type="button" aria-pressed={!selectedItem}
-            onClick={() => selectTile()}>
-            <PlanIcon kind="setup" />{setup.name}
+      {!project.setups.length && <li className="cam-timeline__empty">Create a setup to start the part history.</li>}
+      {project.setups.map((item) => (
+        <li key={item.id}>
+          <button className="cam-timeline__tile" type="button" aria-pressed={!selectedItem && setup?.id === item.id}
+            onClick={() => selectTile(`setup:${item.id}`)}>
+            <PlanIcon kind="setup" />{item.name}
           </button>
         </li>
-      )}
+      ))}
       {plan.map((item) => {
         const operation = item.kind === "process"
           ? project.processes.find((candidate) => candidate.id === item.processId)

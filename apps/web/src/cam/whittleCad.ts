@@ -28,15 +28,21 @@ export const whittleCad: CamCadAdapter = {
     });
   },
 
-  resolveCircularProfile(ref) {
+  resolveSketchFrame(ref) {
     const { doc, builtDoc, regen } = useApp.getState();
     if (ref.kind !== "sketch" || doc.id !== ref.documentId || builtDoc !== doc) return undefined;
+    if (regen?.status.find((item) => item.id === ref.entityId)?.state !== "ok") return undefined;
+    const frame = regen?.sketches.find((item) => item.id === ref.entityId);
+    return frame && { origin: frame.origin, x: frame.xDir, y: frame.yDir, z: frame.normal };
+  },
+
+  resolveCircularProfile(ref) {
+    const { doc, regen } = useApp.getState();
+    const operationFrame = whittleCad.resolveSketchFrame(ref);
+    if (!operationFrame) return undefined;
     const sketch = findFeature(doc, ref.entityId, "sketch");
     const frame = regen?.sketches.find((item) => item.id === ref.entityId);
-    const status = regen?.status.find((item) => item.id === ref.entityId);
-    if (!sketch || !frame || status?.state !== "ok") return undefined;
-
-    const operationFrame = { origin: frame.origin, x: frame.xDir, y: frame.yDir, z: frame.normal };
+    if (!sketch || !frame) return undefined;
     const entities = sketch.entities.filter((item) => !item.construction);
     const geometry = (sketch.geometry ?? []).filter((item) => item.type !== "point" && !item.construction);
     if (entities.length + geometry.length !== 1) return undefined;
@@ -63,7 +69,7 @@ export const whittleCad: CamCadAdapter = {
   },
 
   resolveGeometry(ref) {
-    const { doc, regen, builtDoc } = useApp.getState();
+    const { doc } = useApp.getState();
     if (doc.id !== ref.documentId) return undefined;
 
     if (ref.kind === "sketch") {
@@ -72,9 +78,6 @@ export const whittleCad: CamCadAdapter = {
     }
 
     const body = doc.bodies[ref.entityId];
-    if (builtDoc !== doc || !body || !regen?.bodies.some((candidate) => candidate.id === ref.entityId)) {
-      return undefined;
-    }
-    return { name: body.name };
+    return body && { name: body.name };
   },
 };
