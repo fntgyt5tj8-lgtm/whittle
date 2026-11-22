@@ -619,6 +619,8 @@ export interface MoveFeature extends FeatureBase {
   axis: "x" | "y" | "z";
   angle: Expr;
   copy: boolean;
+  /** Rigid alignment between two earlier, CAM-local coordinate systems. */
+  placement?: { from?: Id; to?: Id };
 }
 
 /** Sweep a closed profile along a path (pipes, handles, rails, gaskets). */
@@ -771,6 +773,8 @@ export interface ImportFeature extends FeatureBase {
   /** "whittle" brings in every body of another Whittle design (a derived copy). */
   format: "step" | "stl" | "obj" | "whittle";
   fileName: string;
+  /** CAM-only reference to one body in an embedded Whittle snapshot. */
+  cadSource?: import("../../cam/src/model").CamCadSource;
   /** Base64 file contents. */
   data: string;
   scale: Expr;
@@ -853,7 +857,7 @@ export interface NamedView {
 export type DatumKind = "plane" | "axis" | "point" | "csys";
 
 export interface WhittleDocument {
-  /** Manufacturing history and operation settings saved with the part. */
+  /** Active CAM project, or legacy manufacturing data retained for migration. */
   manufacturing?: import("../../cam/src/model").CamProject;
   schema: number;
   /** Stable identity across saves (keys local version history). Older files get one on open. */

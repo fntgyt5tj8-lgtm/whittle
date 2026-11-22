@@ -1,3 +1,12 @@
+/** A pinned CAD body. CAM assigns a separate instance ID to each insertion or copy. */
+export interface CamCadSource {
+  readonly version: 1;
+  readonly documentId: string;
+  readonly bodyId: string;
+  /** SHA-256 of the exact .whittle bytes embedded in the instance. */
+  readonly revision: string;
+}
+
 /** A document-scoped reference whose identity is assigned by the CAD host. */
 export interface CamGeometryRef {
   readonly documentId: string;
@@ -73,6 +82,8 @@ export interface CamProject {
   readonly processes: readonly CamProcess[];
   /** Part history in planning order. Execution dependencies are independent of this order. */
   readonly processPlan?: readonly CamPlanItem[];
+  /** Reserved for CAM-owned tool definitions and assignments. */
+  readonly tooling?: Readonly<Record<string, unknown>>;
 }
 
 export interface FlatEndmill {

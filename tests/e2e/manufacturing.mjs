@@ -12,19 +12,32 @@ try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
   await page.addInitScript(() => {
     localStorage.setItem("whittle.debug", "1");
-    let file;
-    const handle = {
-      name: "manufacturing-regression.whittle",
+    const files = new Map();
+    const writes = [];
+    const makeHandle = (name) => ({
+      name,
       createWritable: async () => ({
-        write: async (bytes) => { file = new File([bytes], handle.name); },
+        write: async (bytes) => { files.set(name, new File([bytes], name)); writes.push(name); },
         close: async () => {},
       }),
-      getFile: async () => file,
+      getFile: async () => files.get(name),
+    });
+    const handles = {
+      cad: makeHandle("manufacturing-source.whittle"),
+      cam: makeHandle("manufacturing-regression.cam"),
+      copy: makeHandle("manufacturing-copy.cam"),
     };
-    window.showSaveFilePicker = async () => handle;
-    window.showOpenFilePicker = async () => [handle];
+    window.camTestFiles = { files, writes };
+    window.showSaveFilePicker = async ({ suggestedName }) => {
+      if (window.camTestFiles.wrongSuffix) return handles.cad;
+      if (!suggestedName.endsWith(".cam")) return handles.cad;
+      return files.has(handles.cam.name) ? handles.copy : handles.cam;
+    };
+    window.showOpenFilePicker = async ({ types }) =>
+      [types[0].description === "Whittle CAM document" ? handles.cam : handles.cad];
   });
   await page.goto(url);
+  await page.waitForFunction(() => !!window.whittle?.useApp);
   await page.getByRole("button", { name: /Maker & hobbyist/ }).click();
   await page.getByRole("button", { name: /Mounting plate/ }).click();
   await page.waitForFunction(() => {
@@ -34,7 +47,29 @@ try {
 
   const viewport = await page.locator(".viewport canvas").first().elementHandle();
   const manufacturing = page.getByRole("tab", { name: "Manufacturing" });
+  const command = (id) => page.evaluate((id) => window.whittle.commands.find((item) => item.id === id).run(), id);
+  const name = "manufacturing-source.whittle";
+  await command("save");
+  await page.waitForFunction((name) => window.camTestFiles.files.has(name), name);
+  const source = await page.evaluate(async (name) => Array.from(new Uint8Array(await window.camTestFiles.files.get(name).arrayBuffer())), name);
   await manufacturing.click();
+  assert.equal(await page.getByRole("button", { name: "Save CAM", exact: true }).isEnabled(), false);
+  await page.getByRole("button", { name: "New CAM Document" }).click();
+  await page.waitForFunction(() => {
+    const { doc, documentKind } = window.whittle.useApp.getState();
+    return documentKind === "cam" && doc.features.length === 0 && doc.manufacturing;
+  });
+  const chooser = page.waitForEvent("filechooser");
+  await page.locator('[data-tour="import"]').click();
+  await (await chooser).setFiles({ name, mimeType: "application/vnd.whittle+zip", buffer: Buffer.from(source) });
+  await page.waitForFunction(() => {
+    const { builtDoc, doc, regen } = window.whittle.useApp.getState();
+    return builtDoc === doc && regen?.bodies.length && doc.features.some((f) => f.cadSource);
+  }, null, { timeout: 60_000 });
+  const verify = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: "Verify CAD Source" }).click();
+  await (await verify).setFiles({ name, mimeType: "application/vnd.whittle+zip", buffer: Buffer.from(source) });
+  await page.getByText("The selected CAD file matches the pinned revision.", { exact: true }).waitFor();
   const timeline = page.getByLabel("Manufacturing timeline");
   const setup = page.getByRole("button", { name: "Create setup" });
   assert.equal(await setup.isEnabled(), true);
@@ -61,7 +96,7 @@ try {
   }, frames);
   await setup.click();
   const properties = page.getByRole("complementary", { name: "Manufacturing properties" });
-  await properties.getByRole("heading", { name: "Setup 1" }).waitFor();
+  await properties.getByRole("heading", { name: "PART1" }).waitFor();
 
   const setupName = properties.getByLabel("Setup name");
   await setupName.fill("Primary machining");
@@ -70,21 +105,44 @@ try {
   await properties.getByRole("button", { name: "Delete setup" }).click();
   assert.equal(await history.getByRole("button", { name: "Temporary setup" }).count(), 0);
 
-  const contextPicker = properties.getByLabel("Workpiece context");
+  const contextPicker = properties.getByLabel("Workpiece context", { exact: true });
+  const contextList = properties.getByRole("list", { name: "Workpiece contexts" });
+  const contextPanel = properties.getByRole("region", { name: "Context properties" });
+  const contextName = contextPanel.getByLabel("Context name");
+  const contextCsys = contextPanel.getByLabel("Context CSYS");
+  const editContext = (name) => contextList.getByRole("button", { name: `Edit ${name}`, exact: true }).click();
+  const readContexts = () => page.evaluate(() => window.whittle.useApp.getState().doc.manufacturing.setups[0].contexts);
+  assert.equal(await contextPanel.count(), 0);
+  assert.equal(await properties.getByRole("button", { name: /Add (transfer|ejection)/i }).count(), 0);
   for (const [index, name] of ["Main", "Sub Horizontal", "Sub Vertical"].entries()) {
-    await properties.getByLabel("New context CSYS").selectOption(frames[index].id);
-    await properties.getByRole("button", { name: "Add context" }).click();
-    await properties.getByLabel("Context name").fill(name);
+    await properties.getByRole("button", { name: "Add Context" }).click();
+    assert.equal(await contextPanel.count(), 1);
+    await contextName.fill(name);
+    await contextCsys.selectOption(frames[index].id);
+    const row = contextList.getByRole("listitem").filter({ hasText: name });
+    await row.getByText(frames[index].name, { exact: true }).waitFor();
+    assert.equal(await row.getByRole("button").getAttribute("aria-expanded"), "true");
   }
-  const contextIds = await contextPicker.locator("option").evaluateAll((options) => options.map((option) => option.value));
+  const contextIds = (await readContexts()).map((context) => context.id);
   assert.equal(new Set(contextIds).size, 3);
-  await properties.getByLabel("Selected body role").selectOption("fixture");
-  await properties.getByRole("button", { name: "Assign selected bodies" }).click();
-  await properties.getByRole("list", { name: "Assigned bodies" }).getByText(/fixture/).waitFor();
-  await contextPicker.selectOption({ label: "Sub Horizontal" });
-  await properties.getByLabel("Selected body role").selectOption("stock");
-  await properties.getByRole("button", { name: "Assign selected bodies" }).click();
-  await contextPicker.selectOption({ label: "Main" });
+  const assignedBodies = contextPanel.getByRole("list", { name: "Assigned bodies" });
+  const bodyRole = contextPanel.getByLabel("Selected body role");
+  const assignBodies = contextPanel.getByRole("button", { name: "Assign selected bodies" });
+  await bodyRole.selectOption("fixture");
+  await assignBodies.click();
+  await assignedBodies.getByText("Fixture", { exact: true }).waitFor();
+  await editContext("Sub Horizontal");
+  assert.equal(await contextPanel.count(), 1);
+  assert.equal(await contextName.inputValue(), "Sub Horizontal");
+  assert.equal(await assignedBodies.getByText("Fixture", { exact: true }).count(), 0);
+  await bodyRole.selectOption("stock");
+  await assignBodies.click();
+  await assignedBodies.getByRole("button", { name: /as stock$/ }).click();
+  assert.equal(await assignedBodies.getByText("Stock", { exact: true }).count(), 0);
+  await assignBodies.click();
+  await editContext("Main");
+  await contextPanel.getByRole("button", { name: "Done" }).click();
+  assert.equal(await contextPanel.count(), 0);
 
   const addProfile = page.getByRole("button", { name: "Add profile" });
   const setupTile = history.getByRole("button", { name: "Primary machining" });
@@ -98,18 +156,13 @@ try {
   await properties.getByText("Execution Unit 1", { exact: true }).filter({ visible: true }).waitFor();
 
   await setupTile.click();
-  await properties.getByRole("button", { name: "Add transfer" }).click();
-  await properties.getByRole("heading", { name: "Transfer" }).waitFor();
-  assert.equal(await track.count(), 0);
-
+  assert.equal(await contextPanel.count(), 0);
   await addProfile.click();
   await machiningStage.selectOption({ label: "Sub / back-working" });
   await track.selectOption({ label: "Main Track · Channel 1" });
   await setupTile.click();
-  await properties.getByRole("button", { name: "Add ejection" }).click();
-  await properties.getByRole("heading", { name: "Ejection" }).waitFor();
 
-  const expected = ["Primary machining", "Profile 1 · Main machining", "Transfer", "Profile 2 · Sub / back-working", "Ejection"];
+  const expected = ["Primary machining", "Profile 1 · Main machining", "Profile 2 · Sub / back-working"];
   assert.deepEqual(await tiles.allTextContents(), expected);
   const topPositions = await tiles.evaluateAll((buttons) => buttons.map((button) => button.getBoundingClientRect().top));
   assert.equal(new Set(topPositions).size, 1);
@@ -121,7 +174,7 @@ try {
   assert.equal(await track.inputValue(), "unit-1/track-2");
   await track.selectOption({ label: "Unassigned" });
   assert.deepEqual(await tiles.allTextContents(), expected);
-  await history.getByRole("button", { name: "Transfer" }).click();
+  await setupTile.click();
   await first.click();
   assert.equal(await track.inputValue(), "");
 
@@ -160,9 +213,16 @@ try {
   await properties.getByLabel("Plunge feed (mm/min)").fill("50");
 
   async function exportProfile() {
-    const downloadPromise = page.waitForEvent("download");
-    await properties.getByRole("button", { name: "Export APT-CL" }).click();
-    const download = await downloadPromise;
+    await page.waitForFunction(() => {
+      const { builtDoc, doc } = window.whittle.useApp.getState();
+      return builtDoc === doc;
+    });
+    const [download] = await Promise.all([
+      page.waitForEvent("download", { timeout: 10_000 }),
+      properties.getByRole("button", { name: "Export APT-CL" }).click(),
+    ]).catch(async (error) => {
+      throw new Error(`APT-CL export failed. ${await properties.getByRole("alert").allTextContents()}`, { cause: error });
+    });
     assert.match(download.suggestedFilename(), /^profile.*\.apt$/);
     return readFile(await download.path(), "utf8");
   }
@@ -194,17 +254,26 @@ try {
   assertCoordinates(datumApt, "CIRCLE", [-17, 8, 7, 0, 0, 1, 10]);
   assert.equal([...datumApt.matchAll(/^CIRCLE\//gm)].length, 4);
 
-  const command = (id) => page.evaluate((id) => window.whittle.commands.find((item) => item.id === id).run(), id);
-  await command("save");
+  await page.getByRole("button", { name: "Save CAM", exact: true }).click();
   await page.waitForFunction(() => {
     const { fileName, dirty } = window.whittle.useApp.getState();
-    return fileName === "manufacturing-regression.whittle" && !dirty;
+    return fileName === "manufacturing-regression.cam" && !dirty;
   });
+  await page.getByRole("button", { name: "Save CAM", exact: true }).click();
+  await page.waitForFunction(() => window.camTestFiles.writes.length === 3);
+  await page.evaluate(() => { window.camTestFiles.wrongSuffix = true; });
+  await page.getByRole("button", { name: "Save CAM As", exact: true }).click();
+  await page.getByText(/Choose a \.cam filename/).waitFor();
+  await page.evaluate(() => { window.camTestFiles.wrongSuffix = false; });
+  await page.getByRole("button", { name: "Save CAM As", exact: true }).click();
+  await page.waitForFunction(() => window.whittle.useApp.getState().fileName === "manufacturing-copy.cam");
+  assert.deepEqual(await page.evaluate(() => window.camTestFiles.writes), [name, "manufacturing-regression.cam", "manufacturing-regression.cam", "manufacturing-copy.cam"]);
+  assert.deepEqual(await page.evaluate(async (name) => Array.from(new Uint8Array(await window.camTestFiles.files.get(name).arrayBuffer())), name), source);
   // Change the live project so reopening must restore it from the saved bytes.
   await contextPicker.selectOption({ label: "Main" });
   await page.evaluate(() => window.whittle.useApp.setState({ dirty: false }));
-  await command("open");
-  await page.getByText("Opened manufacturing-regression.whittle", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "Open CAM", exact: true }).click();
+  await page.getByText("Opened manufacturing-regression.cam", { exact: true }).waitFor();
   await manufacturing.click();
   assert.deepEqual(await tiles.allTextContents(), [...expected, "Profile 3 · Main machining"]);
   await history.getByRole("button", { name: "Profile 3 · Main machining" }).click();
@@ -222,11 +291,22 @@ try {
     [["workpiece"], ["workpiece", "stock"], ["workpiece", "fixture"]]);
   await setupTile.click();
   assert.equal(await properties.getByRole("button", { name: "Delete setup" }).isDisabled(), true);
-  await contextPicker.selectOption({ label: "Sub Horizontal" });
-  assert.equal(await properties.getByRole("button", { name: "Delete context" }).isDisabled(), true);
-  await contextPicker.selectOption({ label: "Sub Vertical" });
-  await properties.getByRole("button", { name: "Delete context" }).click();
-  assert.equal(await contextPicker.locator("option").count(), 2);
+  assert.equal(await contextPanel.count(), 0);
+  assert.deepEqual(savedContexts.map((context) => context.frame.csysId), frames.map(({ id }) => id));
+  await editContext("Sub Horizontal");
+  const removeContext = contextPanel.getByRole("button", { name: "Remove Context" });
+  assert.equal(await removeContext.isDisabled(), true);
+  await contextPanel.getByText("Reassign the operations using this context before removing it.").waitFor();
+  await editContext("Sub Vertical");
+  const readCad = () => page.evaluate(() => {
+    const { doc } = window.whittle.useApp.getState();
+    return { bodies: doc.bodies, datums: doc.features.filter((feature) => feature.type === "csys") };
+  });
+  const cadBeforeRemoval = await readCad();
+  await removeContext.click();
+  assert.equal(await contextPanel.count(), 0);
+  assert.deepEqual(await readContexts(), savedContexts.slice(0, 2));
+  assert.deepEqual(await readCad(), cadBeforeRemoval);
   await history.getByRole("button", { name: "Profile 3 · Main machining" }).click();
 
   await page.evaluate((id) => window.whittle.useApp.setState(({ doc }) => ({
@@ -248,7 +328,33 @@ try {
   await setupTile.click();
   await platformMissingBody();
   await properties.getByRole("alert").getByText(/unavailable workpiece body/).first().waitFor();
-  console.log("ok  Multiple workpiece contexts, shared roles, native CSYS transforms, save/reopen and broken references");
+  await command("open");
+  await page.getByRole("button", { name: "Discard changes" }).click();
+  await page.waitForFunction(() => {
+    const { documentKind, doc } = window.whittle.useApp.getState();
+    return documentKind === "cad" && !doc.manufacturing && doc.features.length > 0;
+  });
+  await page.evaluate(() => {
+    const app = window.whittle.useApp;
+    app.setState(({ doc }) => {
+      const body = Object.keys(doc.bodies)[0];
+      return { dirty: true, doc: { ...doc, manufacturing: {
+        schemaVersion: 1, name: "Legacy CAM",
+        setups: [{ id: "legacy-setup", name: "Migrated milling", part: { documentId: doc.id, entityId: body, kind: "body" } }],
+        processes: [],
+      } } };
+    });
+  });
+  await command("save");
+  await page.waitForFunction(() => !window.whittle.useApp.getState().dirty);
+  const legacySource = await page.evaluate(async (name) => Array.from(new Uint8Array(await window.camTestFiles.files.get(name).arrayBuffer())), name);
+  await manufacturing.click();
+  await page.getByRole("button", { name: "Migrate Embedded Manufacturing" }).click();
+  await history.getByRole("button", { name: "Migrated milling" }).waitFor();
+  await page.getByRole("button", { name: "Save CAM", exact: true }).click();
+  await page.waitForFunction(() => !window.whittle.useApp.getState().dirty);
+  assert.deepEqual(await page.evaluate(async (name) => Array.from(new Uint8Array(await window.camTestFiles.files.get(name).arrayBuffer())), name), legacySource);
+  console.log("ok  Independent CAD/CAM files, migration, source verification, native CSYS, deterministic APT-CL and broken references");
 
   async function platformMissingBody() {
     await page.evaluate(() => window.whittle.useApp.setState(({ doc }) => ({

@@ -702,25 +702,42 @@ function LoftEditor({ f }: { f: LoftFeature }) {
 }
 
 function MoveEditor({ f }: { f: MoveFeature }) {
+  const isCam = useApp((s) => s.documentKind === "cam");
+  const features = useApp((s) => s.doc.features);
+  const earlierDatums = features.slice(0, features.findIndex(({ id }) => id === f.id))
+    .filter((feature) => feature.type === "csys" && !feature.suppressed);
   return (
     <>
       <BodySelect value={f.bodyId} allowAuto="Latest body" exclude={f.id} onChange={(v) => upd(f, "Body", (d) => void (d.bodyId = v))} />
-      <div className="field-row">
-        {(["X", "Y", "Z"] as const).map((axis, i) => (
-          <ExprInput key={axis} label={axis} kind="length" value={f.translate[i]!} autoFocus={i === 0} onChange={(v) => upd(f, "Move", (d) => void (d.translate[i] = v))} />
-        ))}
-      </div>
-      <Segmented
-        label="Rotate around"
-        value={f.axis}
-        options={[
-          { value: "x", label: "X" },
-          { value: "y", label: "Y" },
-          { value: "z", label: "Z" },
-        ]}
-        onChange={(v) => upd(f, "Axis", (d) => void (d.axis = v))}
-      />
-      <ExprInput label="Angle" kind="angle" value={f.angle} hint="Turns about the body's own center" onChange={(v) => upd(f, "Angle", (d) => void (d.angle = v))} />
+      {(isCam || f.placement) && <Toggle label="Place between coordinate systems" checked={!!f.placement}
+        onChange={(checked) => upd(f, "Placement mode", (d) => void (d.placement = checked ? {} : undefined))} />}
+      {f.placement ? (["from", "to"] as const).map((end) => (
+        <Select key={end} label={end === "from" ? "Source CSYS" : "Target CSYS"} value={f.placement?.[end] ?? ""}
+          options={[
+            { value: "", label: "Choose a coordinate system" },
+            ...earlierDatums.map((datum) => ({ value: datum.id, label: datum.name })),
+            ...(f.placement?.[end] && !earlierDatums.some((datum) => datum.id === f.placement?.[end])
+              ? [{ value: f.placement[end]!, label: "Unavailable coordinate system" }] : []),
+          ]}
+          onChange={(value) => upd(f, "Placement coordinate system", (d) => { if (d.placement) d.placement[end] = value || undefined; })} />
+      )) : <>
+        <div className="field-row">
+          {(["X", "Y", "Z"] as const).map((axis, i) => (
+            <ExprInput key={axis} label={axis} kind="length" value={f.translate[i]!} autoFocus={i === 0} onChange={(v) => upd(f, "Move", (d) => void (d.translate[i] = v))} />
+          ))}
+        </div>
+        <Segmented
+          label="Rotate around"
+          value={f.axis}
+          options={[
+            { value: "x", label: "X" },
+            { value: "y", label: "Y" },
+            { value: "z", label: "Z" },
+          ]}
+          onChange={(v) => upd(f, "Axis", (d) => void (d.axis = v))}
+        />
+        <ExprInput label="Angle" kind="angle" value={f.angle} hint="Turns about the body's own center" onChange={(v) => upd(f, "Angle", (d) => void (d.angle = v))} />
+      </>}
       <Toggle label="Keep the original (make a copy)" checked={f.copy} onChange={(v) => upd(f, "Copy", (d) => void (d.copy = v))} />
     </>
   );

@@ -85,6 +85,7 @@ export function isCamProject(value: unknown): value is CamProject {
       item[key] === undefined || typeof item[key] === "string");
 
   return record(value) && value.schemaVersion === 1 && typeof value.name === "string"
+    && (value.tooling === undefined || record(value.tooling))
     && Array.isArray(value.setups) && value.setups.every((item) => record(item)
       && typeof item.id === "string" && typeof item.name === "string"
       && (item.part === undefined || geometry(item.part))

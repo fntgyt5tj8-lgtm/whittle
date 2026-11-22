@@ -15,3 +15,4 @@ export * from "./dxf";
 export * from "./inertia";
 export * from "./rules";
 export * from "./designUnits";
+export * from "./camFile";

@@ -69,7 +69,7 @@ export const whittleCad: CamCadAdapter = {
   },
 
   resolveGeometry(ref) {
-    const { doc } = useApp.getState();
+    const { doc, builtDoc, regen } = useApp.getState();
     if (doc.id !== ref.documentId) return undefined;
 
     if (ref.kind === "sketch") {
@@ -78,6 +78,13 @@ export const whittleCad: CamCadAdapter = {
     }
 
     const body = doc.bodies[ref.entityId];
-    return body && { name: body.name };
+    if (!body) return undefined;
+    if (builtDoc === doc) {
+      if (!regen?.bodies.some(({ id }) => id === ref.entityId)) return undefined;
+      const failedPlacement = doc.features.some((f) => f.type === "move" && !f.copy && f.bodyId === ref.entityId
+        && regen.status.some(({ id, state }) => id === f.id && (state === "error" || state === "incomplete")));
+      if (failedPlacement) return undefined;
+    }
+    return { name: body.name };
   },
 };

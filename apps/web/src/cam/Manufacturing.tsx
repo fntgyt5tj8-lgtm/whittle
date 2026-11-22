@@ -3,7 +3,8 @@ import { createProject, migrateWorkpieceContexts, type CamProject } from "@whitt
 import type { ReactNode } from "react";
 import { manufacturingLabel, useCamWorkspace } from "./ui/CamWorkspace";
 import { isNarrow, mutate, useApp } from "../state/store";
-import { Toolbar } from "../ui/Chrome";
+import { commandById } from "../state/commands";
+import { Toolbar, ToolButton } from "../ui/Chrome";
 import { PropertiesPanel } from "../ui/PropertiesPanel";
 import { Timeline } from "../ui/Timeline";
 import { whittleCad } from "./whittleCad";
@@ -14,34 +15,57 @@ export function ManufacturingSlots({ enabled, children }: { enabled: boolean; ch
   // The adapter reads current store state. Subscribe to the inputs that affect its answers.
   useApp((s) => s.selection);
   const doc = useApp((s) => s.doc);
-  useApp((s) => s.regen);
-  useApp((s) => s.builtDoc);
-  const active = useApp((s) => s.ribbonTab === "manufacturing") && enabled;
+  const regen = useApp((s) => s.builtDoc === s.doc ? s.regen : null);
+  const isCam = useApp((s) => s.documentKind === "cam");
+  const active = useApp((s) => s.ribbonTab === "manufacturing") && enabled && isCam;
   const openProperties = () => useApp.setState({ panelOpen: true, ...(isNarrow() ? { browserOpen: false } : {}) });
   function saveProject(update: (current: CamProject) => CamProject, label: string, mergeKey?: string) {
-    const current = useApp.getState().doc.manufacturing ?? emptyProject;
+    const state = useApp.getState();
+    if (state.documentKind !== "cam") return;
+    const current = state.doc.manufacturing ?? emptyProject;
     const next = update(migrateWorkpieceContexts(current));
     if (next !== current) {
       mutate(label, (draft) => { draft.manufacturing = next as Draft<CamProject>; }, mergeKey);
     }
   }
-  const cam = useCamWorkspace(whittleCad, doc.id, migrateWorkpieceContexts(doc.manufacturing ?? emptyProject), saveProject, openProperties);
+  const imports = isCam && regen ? doc.features.filter((f) => f.type === "import" && f.cadSource) : [];
+  const sourceErrors = imports.flatMap((f) => {
+    const status = regen?.status.find(({ id }) => id === f.id);
+    return status?.state === "error" ? [`${f.name}: ${status.message ?? "CAD source unavailable."}`] : [];
+  });
+  const cam = useCamWorkspace(whittleCad, doc.id, migrateWorkpieceContexts((isCam && doc.manufacturing) || emptyProject),
+    saveProject, openProperties, sourceErrors);
   const ribbon = enabled ? {
     label: manufacturingLabel,
     activate: () => useApp.setState({ ribbonTab: "manufacturing", ...(isNarrow() ? { panelOpen: false } : {}) }),
     content: (
-      <div className="toolgroup" role="group" aria-label="Setup and operations">
-        <div className="toolgroup__tools">
-          {cam.commands.map(({ id, label, icon: Icon, enabled, run }) => (
-            <button className="tool" key={id} type="button" disabled={!enabled} aria-label={label} title={label}
-              onClick={() => { run(); openProperties(); }}>
-              <Icon />
-              <span className="tool__label">{label}</span>
-            </button>
-          ))}
+      <>
+        <div className="toolgroup" role="group" aria-label="CAM documents">
+          <div className="toolgroup__tools">
+            {["new-cam", "open-cam", "save-cam", "save-cam-as", ...(!isCam && doc.manufacturing ? ["migrate-cam"] : [])]
+              .map((id) => <ToolButton key={id} c={commandById(id)} />)}
+          </div>
+          <span className="toolgroup__label">CAM documents</span>
         </div>
-        <span className="toolgroup__label">Setup and operations</span>
-      </div>
+        {isCam && <div className="toolgroup" role="group" aria-label="CAM geometry">
+          <div className="toolgroup__tools">
+            {["parts", "import", "move", "csys", "sketch", "verify-cad-source"].map((id) => <ToolButton key={id} c={commandById(id)} />)}
+          </div>
+          <span className="toolgroup__label">CAM geometry</span>
+        </div>}
+        {isCam && <div className="toolgroup" role="group" aria-label="Setup and operations">
+          <div className="toolgroup__tools">
+            {cam.commands.map(({ id, label, icon: Icon, enabled, run }) => (
+              <button className="tool" key={id} type="button" disabled={!enabled} aria-label={label} title={label}
+                onClick={() => { run(); openProperties(); }}>
+                <Icon />
+                <span className="tool__label">{label}</span>
+              </button>
+            ))}
+          </div>
+          <span className="toolgroup__label">Setup and operations</span>
+        </div>}
+      </>
     ),
   } : undefined;
 

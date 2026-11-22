@@ -46,7 +46,7 @@ import {
   saveNamedView,
 } from "./actions";
 import { aiAvailable } from "./platform";
-import { downloadCopy, exportDesign, sendToSlicer, newDesign, openDesign, openFromComputer, saveDesign, saveScreenshot } from "./files";
+import { downloadCopy, exportDesign, sendToSlicer, newDesign, openDesign, openFromComputer, saveDesign, saveScreenshot, newCamDocument, openCamDocument, saveCamDocument, migrateLegacyCam, verifyCamCadSource } from "./files";
 import { exportSketch, importDxfIntoSketch, importSvgIntoSketch, sketchForExport } from "./drawings";
 import { duplicateEntity, mirrorEntity, offsetEntity, rotateEntity } from "./sketchOps";
 import { type ConstraintType, CONSTRAINT_LABELS, CONSTRUCT_MODES, type ConstructMode, datumKind, DIMENSIONS, SURFACE_OPS, type SurfaceOp } from "@whittle/core";
@@ -160,7 +160,7 @@ export const COMMANDS: Command[] = [
   { id: "torus", label: "Torus", group: "Shapes", icon: "torus", keywords: "ring donut o-ring primitive", hint: "Add a ring", when: inModel, run: model(() => addPrimitive("torus")) },
   { id: "tube", label: "Tube", group: "Shapes", icon: "tube", keywords: "pipe sleeve spacer hollow cylinder bushing primitive", hint: "Add a hollow cylinder", when: inModel, run: model(() => addPrimitive("tube")) },
   { id: "parts", label: "Parts library", short: "Parts", group: "Create", icon: "library", keys: "P", keywords: "gear nut bolt washer bracket standoff hinge insert ready made catalog", hint: "Insert ready-made, editable parts", when: inModel, run: model(() => useApp.setState({ panel: "parts" })) },
-  { id: "import", label: "Import STEP / STL / OBJ", short: "Import", group: "Create", icon: "import", keywords: "open insert step stp stl obj mesh reference", hint: "Bring in a part from another CAD tool or a mesh", when: inModel, run: model(importModel) },
+  { id: "import", label: "Import STEP / STL / OBJ / Whittle", short: "Import", group: "Create", icon: "import", keywords: "open insert step stp stl obj mesh reference", hint: "Bring in a part from another CAD tool or a mesh", when: inModel, run: model(importModel) },
   { id: "manufacturing", label: "Manufacturing", group: "Manufacturing", keywords: "cam cnc machining setup profile", when: (s) => s.mode.kind === "model" && !s.session, run: () => useApp.setState({ ribbonTab: "manufacturing" }) },
 
   // Modify
@@ -474,9 +474,17 @@ export const COMMANDS: Command[] = [
   { id: "open", label: "Open…", group: "File", icon: "open", keys: "Ctrl+O", run: () => void openDesign() },
   { id: "save", label: "Save", group: "File", icon: "save", keys: "Ctrl+S", run: () => void saveDesign() },
   { id: "save-as", label: "Save as…", group: "File", icon: "save", keys: "Ctrl+Shift+S", hint: "Save under a new name (a separate design)", run: () => void saveDesign(true) },
+  { id: "new-cam", label: "New CAM Document", group: "File", icon: "file", run: () => void newCamDocument() },
+  { id: "open-cam", label: "Open CAM", group: "File", icon: "open", run: () => void openCamDocument() },
+  { id: "save-cam", label: "Save CAM", group: "File", icon: "save", when: (s) => s.documentKind === "cam", run: () => void saveCamDocument() },
+  { id: "save-cam-as", label: "Save CAM As", group: "File", icon: "save", when: (s) => s.documentKind === "cam", run: () => void saveCamDocument(true) },
+  { id: "migrate-cam", label: "Migrate Embedded Manufacturing", group: "Manufacturing", icon: "file",
+    when: (s) => s.documentKind === "cad" && !!s.doc.manufacturing, run: () => void migrateLegacyCam() },
+  { id: "verify-cad-source", label: "Verify CAD Source", group: "Manufacturing", icon: "link",
+    when: (s) => s.documentKind === "cam" && s.doc.features.some((f) => f.type === "import" && !!f.cadSource), run: () => void verifyCamCadSource() },
   { id: "open-local", label: "Open from this computer…", group: "File", icon: "folder", keywords: "upload import whittle file disk", when: (s) => s.platform.kind === "server", run: () => void openFromComputer() },
   { id: "download-copy", label: "Save a copy to this computer", group: "File", icon: "export", keywords: "download backup whittle file", when: (s) => s.platform.kind === "server", run: () => void downloadCopy() },
-  { id: "history", label: "Version history", group: "File", icon: "history", keywords: "versions restore previous older backup revert undo save", hint: "Every save is kept: look back and restore", run: () => useApp.setState({ panel: "versions" }) },
+  { id: "history", label: "Version history", group: "File", icon: "history", keywords: "versions restore previous older backup revert undo save", hint: "Every save is kept: look back and restore", when: (s) => s.documentKind === "cad", run: () => useApp.setState({ panel: "versions" }) },
   { id: "account", label: "Account", group: "File", icon: "users", keywords: "sign out logout password user profile", when: (s) => s.platform.kind === "server" && !!s.platform.user, run: () => useApp.setState({ panel: "account" }) },
   { id: "users", label: "Administration", group: "File", icon: "shield", keywords: "admin accounts people team users manage merge sso smtp email settings audit", when: (s) => s.platform.kind === "server" && !!s.platform.user?.isAdmin && s.platform.config.auth === "required", run: () => useApp.setState({ panel: "users" }) },
   { id: "export", label: "Export…", group: "File", icon: "export", keywords: "step stl 3mf print slicer download cad cnc", hint: "STEP for other CAD and machining, 3MF / STL for 3D printing", run: () => useApp.setState({ panel: "export" }) },

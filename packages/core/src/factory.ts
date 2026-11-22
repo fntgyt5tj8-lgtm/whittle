@@ -198,7 +198,7 @@ export function makeCombine(doc: WhittleDocument, target?: Id, tools: Id[] = [])
   return { id: uid("cb"), type: "combine", name: nextName(doc, "Combine"), target, tools, op: "join", keepTools: false };
 }
 
-export function makeImport(doc: WhittleDocument, fileName: string, format: "step" | "stl" | "obj" | "whittle", data: string): Feature {
+export function makeImport(doc: WhittleDocument, fileName: string, format: "step" | "stl" | "obj" | "whittle", data: string): Extract<Feature, { type: "import" }> {
   return { id: uid("im"), type: "import", name: nextName(doc, "Import"), fileName, format, data, scale: "1" };
 }
 

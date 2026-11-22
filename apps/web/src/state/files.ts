@@ -7,8 +7,16 @@
  *   browser  File System Access API where available, downloads elsewhere;
  *            every save also keeps a copy in the browser (IndexedDB)
  */
+import { createProject } from "@whittle/cam";
 import { MATERIALS } from "./materials";
 import {
+  CAM_EXTENSION,
+  CAM_MIME,
+  copyLegacyManufacturing,
+  cadRevision,
+  validateCadSource,
+  deserializeCamDocument,
+  serializeCamDocument,
   FILE_EXTENSION,
   type LengthUnit,
   type WhittleDocument,
@@ -54,6 +62,8 @@ const w = (typeof window === "undefined" ? {} : window) as {
 };
 
 const PICKER_TYPES = [{ description: "Whittle design", accept: { "application/vnd.whittle+zip": [FILE_EXTENSION] } }];
+const CAM_FILTER = [{ name: "Whittle CAM document", extensions: ["cam"] }];
+const CAM_PICKER_TYPES = [{ description: "Whittle CAM document", accept: { [CAM_MIME]: [CAM_EXTENSION] } }];
 const DESIGN_FILTER = [{ name: "Whittle design", extensions: ["whittle"] }];
 
 const platform = () => useApp.getState().platform.kind;
@@ -164,20 +174,22 @@ function thumbnail(): Uint8Array | undefined {
 /* ───────────────────────────── New / open ───────────────────────────── */
 
 async function confirmDiscard(): Promise<boolean> {
+  if (saving) return false;
   if (!useApp.getState().dirty) return true;
   return ask({ title: "Discard unsaved changes?", message: "Your changes to this design haven't been saved. They'll be lost if you continue.", confirmLabel: "Discard changes", danger: true });
 }
 
-function show(doc: WhittleDocument, fileName: string | null, loc: DocLocation) {
+function show(doc: WhittleDocument, fileName: string | null, loc: DocLocation, kind: "cad" | "cam" = "cad") {
+  if (saving) return false;
   location = loc;
-  replaceDocument(doc, fileName);
+  replaceDocument(doc, fileName, kind);
   useApp.setState({ panel: null, viewRequest: { kind: "home", at: Date.now() } });
+  return true;
 }
 
 export async function newDesign(units: LengthUnit = useApp.getState().prefs.units, name = "Untitled") {
   if (!(await confirmDiscard())) return false;
-  show(newDocument(name, units), null, { kind: "none" });
-  return true;
+  return show(newDocument(name, units), null, { kind: "none" });
 }
 
 /** Load a document that has no file yet (template, recovered work, a copy). */
@@ -186,11 +198,95 @@ export function loadDocument(doc: WhittleDocument, fileName: string | null) {
 }
 
 /** Load a template or recovered work, asking first if the current design has unsaved changes. */
-export async function loadDocumentConfirm(doc: WhittleDocument, fileName: string | null, unsaved = false): Promise<boolean> {
+export async function loadDocumentConfirm(doc: WhittleDocument, fileName: string | null, unsaved = false, kind: "cad" | "cam" = "cad"): Promise<boolean> {
   if (!(await confirmDiscard())) return false;
-  loadDocument(doc, fileName);
+  if (!show(doc, fileName, { kind: "none" }, kind)) return false;
   if (unsaved) useApp.setState({ dirty: true }); // recovered work has not been saved to a file
   return true;
+}
+
+export async function newCamDocument() {
+  if (!(await confirmDiscard())) return;
+  const doc = newDocument("Untitled CAM", useApp.getState().prefs.units);
+  show({ ...doc, manufacturing: createProject(doc.name) }, null, { kind: "none" }, "cam");
+}
+
+export function migrateLegacyCam() {
+  const { doc, documentKind } = useApp.getState();
+  if (saving || documentKind !== "cad" || !doc.manufacturing) return;
+  if (useApp.getState().dirty) {
+    toast("warn", "Save your CAD changes before migrating embedded Manufacturing.");
+    return;
+  }
+  show(copyLegacyManufacturing(doc), null, { kind: "none" }, "cam");
+  useApp.setState({ dirty: true });
+  toast("info", "Manufacturing copied to a new CAM document. Use Save CAM to keep it.");
+}
+
+function fileKind(name: string): "cad" | "cam" {
+  return name.toLowerCase().endsWith(CAM_EXTENSION) ? "cam" : "cad";
+}
+
+function showOpened(bytes: Uint8Array, name: string, loc: DocLocation, kind = fileKind(name)) {
+  const doc = kind === "cam" ? deserializeCamDocument(bytes) : deserializeDocument(bytes);
+  if (!show(doc, name, loc, kind)) return;
+  toast("ok", `Opened ${name}`);
+  if (kind === "cad" && doc.manufacturing) {
+    toast("info", "This design has embedded Manufacturing data. Use Migrate Embedded Manufacturing to copy it into a CAM document.",
+      { label: "Migrate", run: () => { if (useApp.getState().doc.id === doc.id) void migrateLegacyCam(); } });
+  }
+}
+
+export async function openCamDocument() {
+  if (!(await confirmDiscard())) return;
+  const current = useApp.getState().doc;
+  function open(bytes: Uint8Array, name: string, loc: DocLocation) {
+    if (useApp.getState().doc !== current) throw new Error("The active document changed. Open the CAM file again.");
+    showOpened(bytes, name, loc, "cam");
+  }
+  try {
+    if (tauri()) {
+      const path = await invoke<string | null>("open_dialog", { filters: CAM_FILTER });
+      if (!path) return;
+      if (fileKind(path) !== "cam") throw new Error("Choose a .cam document.");
+      const name = path.split(/[\\/]/).pop() ?? path;
+      open(await desktopRead(path), name, { kind: "path", path });
+      return;
+    }
+    const [handle] = w.showOpenFilePicker ? await w.showOpenFilePicker({ types: CAM_PICKER_TYPES, multiple: false }) : [];
+    const file: File = handle ? await handle.getFile() : await pickFileFallback(CAM_EXTENSION);
+    if (fileKind(file.name) !== "cam") throw new Error("Choose a .cam document.");
+    open(new Uint8Array(await file.arrayBuffer()), file.name, handle ? { kind: "handle", handle } : { kind: "none" });
+  } catch (e) {
+    if (!isAbort(e)) toast("error", errText(e, "Couldn't open that CAM document."));
+  }
+}
+
+/** Compare a chosen source with any instances pinned to its document identity. */
+export async function verifyCamCadSource() {
+  const { doc, documentKind } = useApp.getState();
+  if (documentKind !== "cam") return;
+  try {
+    let bytes: Uint8Array<ArrayBuffer>;
+    if (tauri()) {
+      const path = await invoke<string | null>("open_dialog", { filters: DESIGN_FILTER });
+      if (!path) return;
+      bytes = new Uint8Array(await desktopRead(path));
+    } else {
+      const file = await pickFileFallback(FILE_EXTENSION);
+      bytes = new Uint8Array(await file.arrayBuffer());
+    }
+    if (useApp.getState().doc !== doc) return;
+    const revision = await cadRevision(bytes);
+    const source = deserializeDocument(bytes, `legacy-${revision}`);
+    const references = doc.features.flatMap((f) =>
+      f.type === "import" && f.cadSource && f.cadSource.documentId === source.id ? [f.cadSource] : []);
+    if (!references.length) throw new Error("The file does not match a CAD source in this CAM document.");
+    for (const reference of references) validateCadSource(reference, source, revision);
+    toast("ok", "The selected CAD file matches the pinned revision.");
+  } catch (e) {
+    if (!isAbort(e)) toast("warn", errText(e, "Couldn't verify the CAD source."));
+  }
 }
 
 /** Open: on the server this shows your designs; elsewhere it picks a file. */
@@ -219,9 +315,8 @@ export async function openFromComputer() {
     } else {
       file = await pickFileFallback(FILE_EXTENSION + ",.json");
     }
-    const doc = await withTask("Opening the file…", async () => deserializeDocument(new Uint8Array(await file.arrayBuffer())));
-    show(doc, file.name, h ? { kind: "handle", handle: h } : { kind: "none" });
-    toast("ok", `Opened ${file.name}`);
+    await withTask("Opening the file…", async () =>
+      showOpened(new Uint8Array(await file.arrayBuffer()), file.name, h ? { kind: "handle", handle: h } : { kind: "none" }, "cad"));
   } catch (e) {
     if (!isAbort(e)) toast("error", errText(e, "Couldn't open that file."));
   }
@@ -231,10 +326,8 @@ export async function openFromComputer() {
 export async function openPath(path: string, confirm = true) {
   if (confirm && !(await confirmDiscard())) return;
   try {
-    const doc = deserializeDocument(await desktopRead(path));
     const name = path.split(/[\\/]/).pop() ?? path;
-    show(doc, name, { kind: "path", path });
-    toast("ok", `Opened ${name}`);
+    showOpened(await desktopRead(path), name, { kind: "path", path });
   } catch (e) {
     toast("error", errText(e, "Couldn't open that file."));
   }
@@ -263,9 +356,7 @@ export async function openLaunchedFile(handle: FileHandle) {
   if (!(await confirmDiscard())) return;
   try {
     const file: File = await handle.getFile();
-    const doc = await withTask("Opening the file…", async () => deserializeDocument(new Uint8Array(await file.arrayBuffer())));
-    show(doc, file.name, { kind: "handle", handle });
-    toast("ok", `Opened ${file.name}`);
+    showOpened(new Uint8Array(await file.arrayBuffer()), file.name, { kind: "handle", handle });
   } catch (e) {
     toast("error", errText(e, "Couldn't open that file."));
   }
@@ -289,14 +380,13 @@ export async function openDroppedFile(file: File) {
     return;
   }
   const lower = file.name.toLowerCase();
-  if (!lower.endsWith(FILE_EXTENSION) && !lower.endsWith(".json")) {
-    toast("warn", "Drop a Whittle design, a STEP, STL or OBJ file to import it, or a picture to trace over.");
+  if (!lower.endsWith(FILE_EXTENSION) && !lower.endsWith(CAM_EXTENSION) && !lower.endsWith(".json")) {
+    toast("warn", "Drop a CAD or CAM document, a STEP, STL or OBJ file to import it, or a picture to trace over.");
     return;
   }
   if (!(await confirmDiscard())) return;
   try {
-    show(deserializeDocument(new Uint8Array(await file.arrayBuffer())), file.name, { kind: "none" });
-    toast("ok", `Opened ${file.name}`);
+    showOpened(new Uint8Array(await file.arrayBuffer()), file.name, { kind: "none" });
   } catch (e) {
     toast("error", errText(e, "Couldn't open that file."));
   }
@@ -306,23 +396,40 @@ export async function openDroppedFile(file: File) {
 
 let saving = false;
 
-export async function saveDesign(saveAs = false): Promise<boolean> {
-  if (saving) return false;
+export function saveDesign(saveAs = false): Promise<boolean> {
+  return saveActiveDocument(saveAs, useApp.getState().documentKind);
+}
+
+export function saveCamDocument(saveAs = false): Promise<boolean> {
+  return saveActiveDocument(saveAs, "cam");
+}
+
+async function saveActiveDocument(saveAs: boolean, documentKind: "cad" | "cam"): Promise<boolean> {
+  if (saving || useApp.getState().documentKind !== documentKind) return false;
   commitSession();
   saving = true;
   const task = startTask("Saving…");
   try {
     const { doc } = useApp.getState();
-    const bytes = serializeDocument(doc, thumbnail());
-    const suggested = safeName(doc.name) + FILE_EXTENSION;
+    const cam = documentKind === "cam";
+    const extension = cam ? CAM_EXTENSION : FILE_EXTENSION;
+    const filter = cam ? CAM_FILTER : DESIGN_FILTER;
+    const pickerTypes = cam ? CAM_PICKER_TYPES : PICKER_TYPES;
+    const bytes = cam ? serializeCamDocument(doc) : serializeDocument(doc, thumbnail());
+    const suggested = safeName(doc.name) + extension;
+    const checkName = (name: string) => {
+      if (cam && !name.toLowerCase().endsWith(CAM_EXTENSION)) throw new Error("Choose a .cam filename.");
+      if (!cam && name.toLowerCase().endsWith(CAM_EXTENSION)) throw new Error("Choose a CAD filename.");
+    };
     let label: string;
     const kind = platform();
-    if (kind === "server") {
+    if (kind === "server" && !cam) {
       label = await saveToServer(bytes, saveAs);
     } else if (kind === "desktop") {
       let path = location.kind === "path" && !saveAs ? location.path : null;
-      path ??= await invoke<string | null>("save_dialog", { name: suggested, filters: DESIGN_FILTER });
+      path ??= await invoke<string | null>("save_dialog", { name: suggested, filters: filter });
       if (!path) return false;
+      checkName(path);
       await desktopWrite(path, bytes);
       location = { kind: "path", path };
       label = path.split(/[\\/]/).pop() ?? suggested;
@@ -330,27 +437,28 @@ export async function saveDesign(saveAs = false): Promise<boolean> {
       if (w.showSaveFilePicker) {
         let h = location.kind === "handle" && !saveAs ? location.handle : null;
         const write = async (handle: FileHandle) => {
+          checkName(handle.name);
           const writable = await handle.createWritable();
           await writable.write(bytes);
           await writable.close();
         };
         try {
-          h ??= await w.showSaveFilePicker({ suggestedName: suggested, types: PICKER_TYPES });
+          h ??= await w.showSaveFilePicker({ suggestedName: suggested, types: pickerTypes });
           await write(h);
         } catch (e) {
           // The file was moved or deleted, or permission to it was taken back: ask where to save instead of failing every time.
           if (isAbort(e) || location.kind !== "handle" || saveAs) throw e;
-          h = await w.showSaveFilePicker({ suggestedName: suggested, types: PICKER_TYPES });
+          h = await w.showSaveFilePicker({ suggestedName: suggested, types: pickerTypes });
           await write(h);
         }
         location = { kind: "handle", handle: h };
         label = h.name;
       } else {
-        download(bytes, suggested, "application/vnd.whittle+zip");
+        download(bytes, suggested, cam ? CAM_MIME : "application/vnd.whittle+zip");
         label = suggested;
       }
       // The browser has no file history of its own: keep a copy of every save.
-      if (doc.id) void addLocalVersion({ docId: doc.id, name: doc.name, at: Date.now(), bytes }).catch(() => {});
+      if (!cam && doc.id) void addLocalVersion({ docId: doc.id, name: doc.name, at: Date.now(), bytes }).catch(() => {});
     }
     // Edits made while the save was in flight stay unsaved.
     if (useApp.getState().doc === doc) {
@@ -400,6 +508,7 @@ async function saveToServer(bytes: Uint8Array, saveAs: boolean): Promise<string>
 
 /** A copy of the design as a .whittle file on this computer. */
 export async function downloadCopy() {
+  if (useApp.getState().documentKind === "cam") return void saveCamDocument(true);
   commitSession();
   const { doc } = useApp.getState();
   try {
@@ -496,6 +605,7 @@ export interface VersionItem {
 
 /** Earlier versions of the open design (newest first), or null if it has no history yet. */
 export async function listVersions(): Promise<VersionItem[] | null> {
+  if (useApp.getState().documentKind === "cam") return null;
   const doc = useApp.getState().doc;
   if (location.kind === "server") {
     const list = await apiJson<{ version: number; size: number; createdAt: number; author: string | null }[]>(
@@ -528,6 +638,7 @@ async function versionBytes(item: VersionItem): Promise<Uint8Array> {
 
 /** Make an old version the current one (the version it replaces stays in the history). */
 export async function restoreVersion(item: VersionItem) {
+  if (useApp.getState().documentKind === "cam") return;
   if (!(await confirmDiscard())) return;
   const task = startTask("Restoring the version…");
   try {
@@ -561,31 +672,12 @@ async function reopenServer(id: string) {
 
 /** Open an old version as a separate, unsaved copy. */
 export async function openVersionAsCopy(item: VersionItem) {
+  if (useApp.getState().documentKind === "cam") return;
   if (!(await confirmDiscard())) return;
   try {
     const doc = deserializeDocument(await versionBytes(item));
-    const sourceId = doc.id;
-    const documentId = uid("d");
-    doc.id = documentId;
-    const project = doc.manufacturing;
-    if (project) {
-      const rebase = <T extends { readonly documentId: string }>(ref: T): T =>
-        ref.documentId === sourceId ? { ...ref, documentId } : ref;
-      doc.manufacturing = {
-        ...project,
-        setups: project.setups.map((setup) => ({
-          ...setup,
-          part: setup.part && rebase(setup.part),
-          contexts: setup.contexts?.map((context) => ({
-            ...context,
-            frame: context.frame.kind === "legacy-sketch" && context.frame.sketch
-              ? { ...context.frame, sketch: rebase(context.frame.sketch) } : context.frame,
-            bodies: context.bodies.map((assignment) => ({ ...assignment, body: rebase(assignment.body) })),
-          })),
-        })),
-        processes: project.processes.map((process) => ({ ...process, contour: process.contour && rebase(process.contour) })),
-      };
-    }
+    if (doc.manufacturing) Object.assign(doc, copyLegacyManufacturing(doc, uid("d")));
+    else doc.id = uid("d");
     doc.name = `${doc.name} (${new Date(item.at).toLocaleString()})`;
     loadDocument(doc, null);
     useApp.setState({ dirty: true });
@@ -601,6 +693,7 @@ const draftKey = (docId?: string) => `draft:${docId ?? "design"}`;
 const WEEK_MS = 7 * 24 * 3600 * 1000;
 
 interface Draft {
+  kind?: "cad" | "cam";
   doc: WhittleDocument;
   fileName: string | null;
   at: string;
@@ -614,7 +707,7 @@ export async function readAutosave(): Promise<Draft | null> {
     const newest = (await listStored("draft:"))[0];
     if (!newest) return null;
     const data = await readStored<Draft>(newest.key);
-    return data ? { doc: migrate(data.doc), fileName: data.fileName ?? null, at: data.at, unfinished: !!data.unfinished } : null;
+    return data ? { doc: migrate(data.doc), kind: data.kind === "cam" ? "cam" : "cad", fileName: data.fileName ?? null, at: data.at, unfinished: !!data.unfinished } : null;
   } catch {
     return null;
   }
@@ -636,18 +729,19 @@ export function startAutosave() {
     last = s.doc;
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => {
-      const { doc, fileName, session } = useApp.getState();
+      const { doc, fileName, session, documentKind, dirty } = useApp.getState();
+      if (!dirty) return;
       // Inside a sketch or dialog the live state is kept, so a crash doesn't lose minutes of unfinished work.
       // An early step opened on its own shows a rolled-back model; the draft keeps the design's real rollback.
       const toSave = session?.isolated ? { ...doc, rollback: session.base.rollback } : doc;
       // An empty design needs no recovery copy, and an older one of it must not come back.
-      if (toSave.features.length === 0) {
+      if (toSave.features.length === 0 && documentKind === "cad" && !toSave.manufacturing) {
         if (!cleared.has(draftKey(toSave.id))) void deleteStored(draftKey(toSave.id)).catch(() => {});
         cleared.add(draftKey(toSave.id));
         return;
       }
       cleared.delete(draftKey(toSave.id));
-      const draft = { doc: toSave, fileName, at: new Date().toISOString(), unfinished: !!session } satisfies Draft;
+      const draft = { doc: toSave, kind: documentKind, fileName, at: new Date().toISOString(), unfinished: !!session } satisfies Draft;
       writeStored(draftKey(toSave.id), draft)
         .catch(async (e: unknown) => {
           // The server keeps a limited number of items per person (audit W-4): make room by dropping the oldest

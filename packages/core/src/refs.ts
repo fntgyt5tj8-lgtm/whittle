@@ -83,7 +83,7 @@ export function featureInputs(f: Feature): Id[] {
         ]),
       ];
     case "move":
-      return f.bodyId ? [f.bodyId] : [];
+      return [f.bodyId, f.placement?.from, f.placement?.to].filter((id): id is Id => !!id);
     case "hole":
       return f.face ? [f.face.bodyId] : [];
     case "loft":

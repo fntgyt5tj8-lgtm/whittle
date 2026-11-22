@@ -52,6 +52,9 @@ import {
   makeFillet,
   makeHole,
   makeImport,
+  bodyIdsBefore,
+  cadRevision,
+  deserializeDocument,
   makeLoft,
   makeMirror,
   makeMove,
@@ -352,6 +355,7 @@ export function importModel() {
 }
 
 export async function importFile(file: File) {
+  const { doc, documentKind } = get();
   const ext = file.name.toLowerCase().split(".").pop();
   const format = ext === "stl" ? "stl" : ext === "obj" ? "obj" : ext === "step" || ext === "stp" ? "step" : ext === "whittle" ? "whittle" : null;
   if (!format) return toast("warn", "Only STEP (.step, .stp), STL, OBJ and Whittle (.whittle) files can be inserted.");
@@ -359,8 +363,15 @@ export async function importFile(file: File) {
   // Reading and encoding a big file takes a moment: show how far along it is, and let the window breathe meanwhile.
   const task = startTask(`Reading ${file.name}…`, 0);
   let data: string;
+  let source: { doc: ReturnType<typeof deserializeDocument>; revision: string } | undefined;
   try {
     const bytes = new Uint8Array(await file.arrayBuffer());
+    if (documentKind === "cam" && format === "whittle") {
+      const revision = await cadRevision(bytes);
+      const sourceDoc = deserializeDocument(bytes, `legacy-${revision}`);
+      if (!sourceDoc.id || !bodyIdsBefore(sourceDoc).length) throw new Error("The CAD source has no active bodies.");
+      source = { doc: sourceDoc, revision };
+    }
     let bin = "";
     for (let i = 0, n = 0; i < bytes.length; i += 0x8000, n++) {
       bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
@@ -375,7 +386,27 @@ export async function importFile(file: File) {
   } finally {
     task.done();
   }
-  const f = makeImport(get().doc, file.name, format, data);
+  if (get().doc !== doc) return toast("warn", "The document changed while the file was being read. Insert the file again.");
+  if (source) {
+    const { doc: sourceDoc, revision } = source;
+    const bodies = bodyIdsBefore(sourceDoc);
+    const name = file.name.replace(/\.[^.]+$/, "");
+    mutate(`Insert ${file.name}`, (draft) => {
+      const at = activeEnd(doc);
+      const imports = bodies.map((bodyId) => {
+        const f = makeImport(doc, file.name, "whittle", data);
+        f.name = sourceDoc.bodies[bodyId]?.name ?? name;
+        f.cadSource = { version: 1, documentId: sourceDoc.id!, bodyId, revision };
+        draft.bodies[f.id] = { color: sourceDoc.bodies[bodyId]?.color ?? "#afbdcd", name: f.name, visible: true };
+        return f;
+      });
+      draft.features.splice(at, 0, ...imports);
+      if (draft.rollback !== null) draft.rollback += imports.length;
+    });
+    toast("ok", `Inserted ${bodies.length} CAD ${bodies.length === 1 ? "body" : "bodies"} from ${file.name}`);
+    return;
+  }
+  const f = makeImport(doc, file.name, format, data);
   f.name = file.name.replace(/\.[^.]+$/, "");
   beginNewFeature(f, `Import ${file.name}`);
   commitSession();

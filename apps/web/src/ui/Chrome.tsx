@@ -21,6 +21,7 @@ export function TitleBar() {
   const doc = useApp((s) => s.doc);
   const dirty = useApp((s) => s.dirty);
   const fileName = useApp((s) => s.fileName);
+  const isCam = useApp((s) => s.documentKind === "cam");
   const theme = useApp((s) => s.theme);
   const assistant = useApp((s) => s.assistant);
   const browserOpen = useApp((s) => s.browserOpen);
@@ -55,10 +56,10 @@ export function TitleBar() {
         <button className="iconbtn titlebar__opt" onClick={() => run("open")} title="Open (Ctrl+O)">
           <Icon name="open" size={18} />
         </button>
-        <button className="iconbtn" onClick={() => run("save")} title="Save (Ctrl+S)">
+        <button className="iconbtn" onClick={() => run("save")} title={isCam ? "Save CAM (Ctrl+S)" : "Save (Ctrl+S)"}>
           <Icon name="save" size={18} />
         </button>
-        <button className="iconbtn titlebar__opt" onClick={() => run("history")} title="Version history">
+        <button className="iconbtn titlebar__opt" disabled={isCam} onClick={() => run("history")} title="Version history">
           <Icon name="history" size={18} />
         </button>
         <button className="iconbtn titlebar__opt" onClick={() => run("export")} title="Export (STEP, 3MF, STL)">
@@ -77,7 +78,7 @@ export function TitleBar() {
         <input
           className="docname__input"
           value={name}
-          aria-label="Design name"
+          aria-label={isCam ? "CAM document name" : "Design name"}
           spellCheck={false}
           onChange={(e) => setName(e.target.value)}
           onBlur={() => {
@@ -155,7 +156,7 @@ function HelpMenu() {
 
 /* ───────────────────────────── Toolbar ───────────────────────────── */
 
-function ToolButton({ c, active, big }: { c: Command; active?: boolean; big?: boolean }) {
+export function ToolButton({ c, active, big }: { c: Command; active?: boolean; big?: boolean }) {
   // Only what this button shows: a whole-state subscription redrew every button on every pointer move (audit P-1).
   const why = useApp((s) => whyUnavailable(c, s));
   const on = useApp((s) => !!c.on?.(s));
@@ -394,11 +395,12 @@ export function Toolbar({ manufacturing }: { manufacturing?: { label: string; ac
   // A design that already has surfaces keeps the Surface tab, whatever the profile.
   const hasSurfaces = useApp((s) => s.doc.features.some((f) => f.type.startsWith("surface") || ("surface" in f && !!(f as { surface?: boolean }).surface)));
   const chosen = useApp((s) => s.ribbonTab);
+  const isCam = useApp((s) => s.documentKind === "cam");
   const sketching = mode.kind === "sketch";
   const tabs: { id: "solid" | "surface" | "tools"; label: string }[] = [
     { id: "solid", label: "Solid" },
     ...(!simple || hasSurfaces ? [{ id: "surface" as const, label: "Surface" }] : []),
-    ...(!simple ? [{ id: "tools" as const, label: "Tools" }] : []),
+    ...(!simple || isCam ? [{ id: "tools" as const, label: "Tools" }] : []),
   ];
   const tab = chosen !== "manufacturing" && tabs.some((t) => t.id === chosen) ? chosen : "solid";
   const manufacturingActive = chosen === "manufacturing" && !!manufacturing;

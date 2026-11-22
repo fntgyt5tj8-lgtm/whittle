@@ -113,6 +113,7 @@ export type Theme = ThemeId;
 
 export interface AppState {
   doc: WhittleDocument;
+  documentKind: "cad" | "cam";
   historyTick: number;
   dirty: boolean;
   fileName: string | null;
@@ -181,6 +182,7 @@ const initialPrefs = loadPrefs();
 
 export const useApp = create<AppState>(() => ({
   doc: newDocument(),
+  documentKind: "cad",
   historyTick: 0,
   dirty: false,
   fileName: null,
@@ -289,11 +291,13 @@ export function mutate(label: string, recipe: (d: Draft<WhittleDocument>) => voi
   if (next !== doc) set({ doc: next, dirty: true, historyTick: get().historyTick + 1 });
 }
 
-export function replaceDocument(doc: WhittleDocument, fileName: string | null) {
+export function replaceDocument(doc: WhittleDocument, fileName: string | null, documentKind: AppState["documentKind"] = "cad") {
   history.clear();
   set({
     // A file from an older version may lack metadata for some bodies (so they couldn't be hidden or renamed).
     doc: produce(doc, syncBodies),
+    documentKind,
+    ribbonTab: documentKind === "cam" ? "manufacturing" : "solid",
     fileName,
     dirty: false,
     session: null,

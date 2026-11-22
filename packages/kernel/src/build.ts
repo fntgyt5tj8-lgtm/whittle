@@ -8,8 +8,8 @@
  * friendly message (and, where possible, a one-click fix) and later features
  * keep building on the last good state.
  */
-import { CSYS_INPUT_KINDS, type BodyOp, type CsysFeature, type CsysInput, type EdgeRef, type LengthUnit, lengthText, type Evaluator, type FaceRef, type Feature, type HoleFeature, type Id, type SketchFeature, type SketchSolution, type Vec3, type WhittleDocument, activeEnd, createEvaluator, deserializeDocument, drawnEntities, entityOutline, expandSketch, frameAxes, planeOrigin, sketchGap, polylinePath, resolveEntity, thickenPath } from "@whittle/core";
-import { type Blueprint, Drawing, type Edge, type Face, draw, organiseBlueprints, type FaceFinder, Plane, type Shape3D, type Wire, asDir, basicFaceExtrusion, cast, downcast, genericSweep, getOC, makeHelix, makeOffset, makePln, drawCircle, importSTEP, loft, makeBox, makeSolid, Vector, makeCompound, makeCylinder, makeSphere, measureArea, measureShapeVolumeProperties } from "replicad";
+import { CSYS_INPUT_KINDS, type BodyOp, type CsysFeature, type CsysInput, type EdgeRef, type LengthUnit, lengthText, type Evaluator, type FaceRef, type Feature, type HoleFeature, type Id, type SketchFeature, type SketchSolution, type Vec3, type WhittleDocument, activeEnd, cadRevision, createEvaluator, deserializeDocument, validateCadSource, drawnEntities, entityOutline, expandSketch, frameAxes, planeOrigin, sketchGap, polylinePath, resolveEntity, thickenPath } from "@whittle/core";
+import { type Blueprint, Drawing, type Edge, type Face, draw, organiseBlueprints, type FaceFinder, Plane, type Shape3D, type Wire, asDir, basicFaceExtrusion, cast, downcast, genericSweep, getOC, makeHelix, makeOffset, makePln, drawCircle, importSTEP, loft, makeBox, makeSolid, Vector, makeCompound, makeCylinder, makeSphere, Transformation, measureArea, measureShapeVolumeProperties } from "replicad";
 import type { BodyResult, FeatureStatus, PartialCsys, RegenResult, SketchFrame } from "./protocol";
 import type { CoilFeature, DraftFeature, OffsetFaceFeature, PlaneRef, SweepFeature } from "@whittle/core";
 import "./fastTopo";
@@ -361,28 +361,42 @@ export class Builder {
       const unused = [...cache.keys()].filter((k) => !using.has(k));
       for (const k of unused.slice(0, Math.max(0, unused.length - 4))) cache.delete(k);
     }
+    const snapshots = new Map<string, { doc: WhittleDocument; revision: string; bodies: Map<Id, Shape3D> }>();
     for (const f of doc.features) {
       if (f.type !== "import") continue;
       const key = importKey(f);
       if (this.imports.has(key) || this.importErrors.has(key)) continue;
       try {
-        // Decoding is inside the try: a damaged file fails its own feature, not every rebuild of the design.
-        let bin: string;
-        try {
-          bin = atob(f.data);
-        } catch {
-          throw new Error("The file embedded in this design is damaged.");
+        if (f.cadSource && !f.data) throw new Error("The embedded CAD source is missing.");
+        if (f.cadSource && f.format === "whittle") {
+          let snapshot = snapshots.get(f.data);
+          if (!snapshot) {
+            const bytes = Uint8Array.from(atob(f.data), (c) => c.charCodeAt(0));
+            const revision = await cadRevision(bytes);
+            const sub = deserializeDocument(bytes, `legacy-${revision}`);
+            validateCadSource(f.cadSource, sub, revision);
+            const nested = new Builder();
+            await nested.prepareImports(sub);
+            snapshot = { doc: sub, revision, bodies: nested.shapes(sub) };
+            snapshots.set(f.data, snapshot);
+          } else {
+            validateCadSource(f.cadSource, snapshot.doc, snapshot.revision);
+          }
+          const shape = snapshot.bodies.get(f.cadSource.bodyId);
+          if (!shape) throw new Error("The CAD source body could not be built.");
+          this.imports.set(key, shape);
+        } else {
+          const bytes = Uint8Array.from(atob(f.data), (c) => c.charCodeAt(0));
+          const blob = new Blob([bytes]);
+          if (f.format === "whittle") {
+            const sub = deserializeDocument(bytes);
+            const nested = new Builder();
+            await nested.prepareImports(sub);
+            const shapes = [...nested.shapes(sub).values()];
+            if (!shapes.length) throw new Error("That design has no bodies to bring in.");
+            this.imports.set(key, (shapes.length === 1 ? shapes[0]! : makeCompound(shapes)) as Shape3D);
+          } else this.imports.set(key, f.format === "step" ? ((await importSTEP(blob)) as Shape3D) : f.format === "obj" ? stlToShape(bytes, parseOBJ(bytes)) : stlToShape(bytes));
         }
-        const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
-        const blob = new Blob([bytes]);
-        if (f.format === "whittle") {
-          const sub = deserializeDocument(bytes);
-          const nested = new Builder();
-          await nested.prepareImports(sub);
-          const shapes = [...nested.shapes(sub).values()];
-          if (!shapes.length) throw new Error("That design has no bodies to bring in.");
-          this.imports.set(key, (shapes.length === 1 ? shapes[0]! : makeCompound(shapes)) as Shape3D);
-        } else this.imports.set(key, f.format === "step" ? ((await importSTEP(blob)) as Shape3D) : f.format === "obj" ? stlToShape(bytes, parseOBJ(bytes)) : stlToShape(bytes));
       } catch (e) {
         this.importErrors.set(key, e instanceof Error && !/^\d+$/.test(e.message) ? e.message : FRIENDLY.import!);
       }
@@ -1174,11 +1188,21 @@ export class Builder {
         const id = f.bodyId ?? lastBody(bodies);
         if (!id || !bodies.has(id)) throw new FeatureError("Pick a body to move.");
         const src = bodies.get(id)!;
-        const tr = f.translate.map((v, i) => ev.num(v, "length", "XYZ"[i]!)) as Vec3;
-        const a = deg(ev.num(f.angle, "angle", "Angle"));
-        let out = src.clone();
-        if (Math.abs(a) > 1e-9) out = out.rotate(a, boxCenter(src), AXES[f.axis]);
-        if (tr.some((v) => Math.abs(v) > 1e-12)) out = out.translate(tr);
+        let out: Shape3D;
+        if (f.placement) {
+          const from = f.placement.from && sketches.get(f.placement.from)?.frame;
+          const to = f.placement.to && sketches.get(f.placement.to)?.frame;
+          if (!from || !to || from.kind !== "csys" || to.kind !== "csys") {
+            throw new FeatureError("Choose two available coordinate systems before this Move step.", undefined, true);
+          }
+          out = placeBetweenFrames(src, from, to);
+        } else {
+          const tr = f.translate.map((v, i) => ev.num(v, "length", "XYZ"[i]!)) as Vec3;
+          const a = deg(ev.num(f.angle, "angle", "Angle"));
+          out = src.clone();
+          if (Math.abs(a) > 1e-9) out = out.rotate(a, boxCenter(src), AXES[f.axis]);
+          if (tr.some((v) => Math.abs(v) > 1e-12)) out = out.translate(tr);
+        }
         if (f.copy) bodies.set(f.id, out);
         else bodies.set(id, out);
         return;
@@ -1777,14 +1801,35 @@ function offsetFaces(f: OffsetFaceFeature, bodies: Map<Id, Shape3D>, ev: Evaluat
   return warning;
 }
 
-const importKeys = new Map<Id, { data: string; key: string }>();
+function placeBetweenFrames(shape: Shape3D, from: SketchFrame, to: SketchFrame): Shape3D {
+  const sourceAxes = [from.xDir, from.yDir, from.normal];
+  const targetAxes = [to.xDir, to.yDir, to.normal];
+  const rotation = (vector: Vec3): Vec3 => {
+    const [x, y, z] = sourceAxes.map((axis) => dot(vector, axis)) as Vec3;
+    return add(add(scale(targetAxes[0]!, x), scale(targetAxes[1]!, y)), scale(targetAxes[2]!, z));
+  };
+  const [a, d, g] = rotation([1, 0, 0]);
+  const [b, e, h] = rotation([0, 1, 0]);
+  const [c, f, i] = rotation([0, 0, 1]);
+  const [tx, ty, tz] = subv(to.origin, rotation(from.origin));
+  const transform = new Transformation();
+  try {
+    transform.wrapped.SetValues(a, b, c, tx, d, e, f, ty, g, h, i, tz);
+    return cast(transform.transform(shape.wrapped)) as Shape3D;
+  } finally {
+    transform.delete();
+  }
+}
+
+const importKeys = new Map<Id, { data: string; source: string; key: string }>();
 
 /** Identifies an embedded file by its whole content (hashed once per distinct string, not on every rebuild). */
-function importKey(f: { id: Id; data: string }): string {
+function importKey(f: Extract<Feature, { type: "import" }>): string {
+  const source = JSON.stringify([f.format, f.cadSource]);
   const known = importKeys.get(f.id);
-  if (known && known.data === f.data) return known.key;
-  const key = `${f.id}:${f.data.length}:${hashKey(f.data)}`;
-  importKeys.set(f.id, { data: f.data, key });
+  if (known && known.data === f.data && known.source === source) return known.key;
+  const key = `${f.id}:${f.data.length}:${hashKey(f.data)}:${source}`;
+  importKeys.set(f.id, { data: f.data, source, key });
   return key;
 }
 

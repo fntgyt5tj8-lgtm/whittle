@@ -1,7 +1,7 @@
 import { useState } from "react";
 import {
-  CAM_WORLD, addPlanStage, addProcess, addSetup, getProcessPlan, validateProject,
-  type CamMachiningStage, type CamPlanItem, type CamPlanStage, type CamProject, type CamSetup, type CircularProfileSettings,
+  CAM_WORLD, addProcess, addSetup, getProcessPlan, validateProject,
+  type CamMachiningStage, type CamPlanItem, type CamProject, type CamSetup, type CircularProfileSettings,
 } from "@whittle/cam";
 import type { CamCadAdapter } from "../cadAdapter";
 import { demoMachine, demoTracks, trackKey } from "../machine";
@@ -27,9 +27,10 @@ export function useCamWorkspace(
   project: CamProject,
   setProject: (update: (current: CamProject) => CamProject, label: string, mergeKey?: string) => void,
   openProperties: () => void,
+  sourceErrors: readonly string[],
 ) {
   const [selection, setSelection] = useState<{ documentId?: string; key?: string }>({});
-  const [contextSelection, setContextSelection] = useState<{ setupId?: string; id?: string }>({});
+  const [contextSelection, setContextSelection] = useState<{ documentId?: string; setupId?: string; id?: string }>({});
   const selectedKey = selection.documentId === documentId ? selection.key : undefined;
   const setSelectedKey = (key?: string) => setSelection({ documentId, key });
 
@@ -44,9 +45,9 @@ export function useCamWorkspace(
     ?? (selectedItem ? undefined : project.setups[0]);
   const contexts = setup?.contexts ?? [];
   const context = process ? contexts.find((item) => item.id === process.contextId)
-    : (contextSelection.setupId === setup?.id ? contexts.find((item) => item.id === contextSelection.id) : undefined)
+    : (contextSelection.documentId === documentId && contextSelection.setupId === setup?.id ? contexts.find((item) => item.id === contextSelection.id) : undefined)
       ?? contexts[0];
-  const selectContext = (id?: string) => setContextSelection({ setupId: setup?.id, id });
+  const selectContext = (id?: string) => setContextSelection({ documentId, setupId: setup?.id, id });
   const usedContexts = new Set(project.processes.filter((item) => item.setupId === setup?.id).map((item) => item.contextId));
   const setupInUse = !!usedContexts.size || plan.some((item) => item.kind !== "process" && item.setupId === setup?.id);
   const frame = context?.frame;
@@ -94,11 +95,19 @@ export function useCamWorkspace(
     setSelectedKey(`process:${id}`);
   }
 
-  function createStage(kind: CamPlanStage["kind"]) {
-    if (!setup) return;
-    const id = `stage-${plan.length + 1}`;
-    setProject((current) => addPlanStage(current, { id, kind, setupId: setup.id }), `Add ${stageLabels[kind].toLowerCase()}`);
-    setSelectedKey(`stage:${id}`);
+  function removeContext(id: string) {
+    if (!setup) return false;
+    let removed = false;
+    setProject((current) => {
+      if (current.processes.some((item) => item.setupId === setup.id && item.contextId === id)) return current;
+      removed = true;
+      return {
+        ...current, setups: current.setups.map((item) => item.id === setup.id
+          ? { ...item, contexts: item.contexts?.filter((context) => context.id !== id) } : item),
+      };
+    }, "Remove workpiece context");
+    if (removed && contextSelection.id === id) selectContext();
+    return removed;
   }
 
   function changeMachiningStage(stage: CamMachiningStage) {
@@ -140,9 +149,13 @@ export function useCamWorkspace(
     { id: "profile", label: "Add profile", icon: MillIcon, enabled: !!setup && !!context, run: createProfile },
   ];
   const selectedStage = selectedItem && selectedItem.kind !== "process" ? selectedItem : undefined;
-  const errors = validateProject(project);
+  const errors = [...validateProject(project), ...sourceErrors];
   const datums = cad.getCoordinateSystems();
-  if (process?.contour && !cad.resolveGeometry(process.contour)) errors.push(`${process.name} references a missing profile sketch.`);
+  for (const item of project.processes) {
+    if (item.contour && !cad.resolveGeometry(item.contour)) errors.push(`${item.name} references a missing profile sketch.`);
+  }
+  const operationErrors = () => (context?.bodies ?? []).flatMap(({ body, role }) =>
+    cad.resolveGeometry(body) ? [] : [`The ${role} body (${body.entityId}) is unavailable.`]);
   for (const item of project.setups.flatMap((item) => item.contexts ?? [])) {
     if (item.frame.kind === "native" && item.frame.csysId) {
       const csysId = item.frame.csysId;
@@ -158,7 +171,7 @@ export function useCamWorkspace(
 
   const properties = (
     <div className="cam-properties">
-      <h2>{process?.name ?? (selectedStage && stageLabels[selectedStage.kind]) ?? setup?.name ?? manufacturingLabel}</h2>
+      <h2>{process?.name ?? (selectedStage && stageLabels[selectedStage.kind]) ?? (setup ? "PART1" : manufacturingLabel)}</h2>
       <p>{demoMachine.name} · {demoMachine.controller}</p>
       <dl>
         {selectedItem && <><dt>Setup</dt><dd>{setup?.name}</dd></>}
@@ -199,17 +212,11 @@ export function useCamWorkspace(
       </dl>
       {process && !process.contour && <p>Select a sketch with one circle before adding a profile to export APT-CL.</p>}
       {process?.contour && <ProfileExport key={`${documentId}/${process.id}`}
-        name={process.id} settings={process.profile} onChange={changeProfile} resolveFrame={resolveFrame}
+        name={process.id} settings={process.profile} onChange={changeProfile} resolveFrame={resolveFrame} validateReferences={operationErrors}
         resolve={() => process.contour && cad.resolveCircularProfile?.(process.contour)} />}
-      {setup && !selectedItem && <SetupEditor key={setup.id}
-        setup={setup} context={context} cad={cad} edit={editSetup} select={selectContext}
+      {setup && !selectedItem && <SetupEditor key={`${documentId}/${setup.id}`}
+        setup={setup} cad={cad} edit={editSetup} select={selectContext} removeContext={removeContext}
         deleteSetup={deleteSetup} setupInUse={setupInUse} usedContexts={usedContexts} />}
-      {setup && !selectedItem && (
-        <div className="cam-properties__actions">
-          <button type="button" onClick={() => createStage("transfer")}>Add transfer</button>
-          <button type="button" onClick={() => createStage("ejection")}>Add ejection</button>
-        </div>
-      )}
       {errors.length > 0 && (
         <ul role="alert">{errors.map((error, index) => <li key={index}>{error}</li>)}</ul>
       )}

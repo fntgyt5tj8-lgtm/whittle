@@ -73,31 +73,31 @@ function bytesToBase64(bytes: Uint8Array): string {
 /** The largest document.json read from a file: a guard against decompression bombs. */
 const MAX_DOCUMENT_BYTES = 256 * 1024 * 1024;
 
-function parseDocumentJson(bytes: Uint8Array): WhittleDocument {
+function parseDocumentJson(bytes: Uint8Array, fallbackId?: string): WhittleDocument {
   let json: unknown;
   try {
     json = JSON.parse(strFromU8(bytes));
   } catch {
     throw new FileFormatError("This isn't a Whittle file (or it is damaged).");
   }
-  return migrate(json);
+  return migrate(json, fallbackId);
 }
 
 /** All embedded files of one design together, unpacked (audit C-10: each entry was capped, the total wasn't). */
 const MAX_IMPORTS_BYTES = 1024 * 1024 * 1024;
 
-export function deserializeDocument(bytes: Uint8Array): WhittleDocument {
+export function deserializeDocument(bytes: Uint8Array, fallbackId?: string): WhittleDocument {
   let files: Record<string, Uint8Array>;
   try {
     // Only document.json first; skipping the rest (and refusing a huge one) keeps a hostile file cheap.
     files = unzipSync(bytes, { filter: (f) => f.name === "document.json" && f.originalSize <= MAX_DOCUMENT_BYTES });
   } catch {
     // Also accept a bare document.json (handy for tests and hand-editing).
-    return parseDocumentJson(bytes);
+    return parseDocumentJson(bytes, fallbackId);
   }
   const raw = files["document.json"];
   if (!raw) throw new FileFormatError("The file is missing its document.json (or it is too large).");
-  const doc = parseDocumentJson(raw);
+  const doc = parseDocumentJson(raw, fallbackId);
   // Then only the embedded files the document actually uses, up to a total size.
   const wanted = new Set(doc.features.filter((f) => f.type === "import" && !f.data).map((f) => `imports/${f.id}.bin`));
   let total = 0;
@@ -143,7 +143,7 @@ const MIGRATIONS: Record<number, Migration> = {
   },
 };
 
-export function migrate(input: unknown): WhittleDocument {
+export function migrate(input: unknown, fallbackId?: string): WhittleDocument {
   if (!input || typeof input !== "object") throw new FileFormatError("The document is empty.");
   let doc = input as Record<string, unknown>;
   let schema = typeof doc.schema === "number" && Number.isFinite(doc.schema) ? Math.floor(doc.schema) : 1;
@@ -179,6 +179,14 @@ export function migrate(input: unknown): WhittleDocument {
   for (const f of features) {
     if (ids.has(f.id as string)) throw new FileFormatError("The document's feature list is damaged (two steps share an id).");
     ids.add(f.id as string);
+    if (f.type === "import" && f.cadSource !== undefined) {
+      const ref = f.cadSource;
+      if (!isRecord(ref) || ref.version !== 1 || typeof ref.documentId !== "string" || !ref.documentId ||
+          typeof ref.bodyId !== "string" || !ref.bodyId || typeof ref.revision !== "string" ||
+          !/^[a-f0-9]{64}$/.test(ref.revision) || f.format !== "whittle") {
+        throw new FileFormatError("A CAD source reference is damaged or uses an unsupported version.");
+      }
+    }
     if (f.type === "sketch") {
       if (!Array.isArray(f.entities)) f.entities = [];
       f.entities = (f.entities as unknown[]).filter(isRecord);
@@ -216,7 +224,7 @@ export function migrate(input: unknown): WhittleDocument {
     if (!kinds.includes(p.kind)) p.kind = "length";
     if (typeof p.expr === "number") p.expr = String(p.expr);
   }
-  d.id ??= uid("d");
+  d.id ||= fallbackId ?? uid("d");
   if (typeof d.name !== "string" || !d.name.trim()) d.name = "Untitled";
   return d;
 }

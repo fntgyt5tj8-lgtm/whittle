@@ -56,6 +56,13 @@
         "description": "Whittle parametric design",
         "mimeType": "application/vnd.whittle+zip",
         "role": "Editor"
+      },
+      {
+        "ext": ["cam"],
+        "name": "Whittle CAM document",
+        "description": "Whittle Manufacturing document",
+        "mimeType": "application/vnd.whittle.cam+zip",
+        "role": "Editor"
       }
     ],
     "windows": {

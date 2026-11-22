@@ -9,10 +9,11 @@ const dimensions = [
   ["plungeFeed", "Plunge feed (mm/min)"],
 ] as const;
 
-export function ProfileExport({ name, resolve, settings = {}, onChange, resolveFrame }: {
+export function ProfileExport({ name, resolve, settings = {}, onChange, resolveFrame, validateReferences }: {
   name: string;
   settings?: CircularProfileSettings;
   onChange: (settings: Partial<CircularProfileSettings>) => void;
+  validateReferences: () => readonly string[];
   resolveFrame: () => CamFrame | undefined;
   resolve: () => CircularProfileGeometry | undefined;
 }) {
@@ -30,6 +31,12 @@ export function ProfileExport({ name, resolve, settings = {}, onChange, resolveF
     const workpieceCsys = resolveFrame();
     if (!workpieceCsys) {
       setErrors(["The context coordinate system is unavailable. Repair the datum or select another workpiece context."]);
+      return;
+    }
+
+    const referenceErrors = validateReferences();
+    if (referenceErrors.length) {
+      setErrors(referenceErrors);
       return;
     }
 

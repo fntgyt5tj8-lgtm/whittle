@@ -85,6 +85,10 @@ fn is_design(p: &Path) -> bool {
     p.extension().is_some_and(|e| e.eq_ignore_ascii_case("whittle"))
 }
 
+fn is_cam(p: &Path) -> bool {
+    p.extension().is_some_and(|e| e.eq_ignore_ascii_case("cam"))
+}
+
 fn allow(state: &AppData, p: &Path) {
     state.allowed.lock().unwrap().insert(p.to_path_buf());
 }
@@ -118,7 +122,7 @@ fn save_recent(app: &AppHandle, list: &[Recent]) {
 }
 
 fn touch_recent(app: &AppHandle, p: &Path) {
-    if !is_design(p) {
+    if !is_design(p) && !is_cam(p) {
         return;
     }
     let path = p.to_string_lossy().to_string();
@@ -317,7 +321,10 @@ fn read_history(app: AppHandle, state: State<'_, AppData>, path: String, id: Str
 /* ───────────────────────── Opening files from the OS ───────────────────────── */
 
 fn design_args(args: &[String]) -> Vec<String> {
-    args.iter().skip(1).filter(|a| a.to_lowercase().ends_with(".whittle")).cloned().collect()
+    args.iter().skip(1).filter(|a| {
+        let path = Path::new(a);
+        is_design(path) || is_cam(path)
+    }).cloned().collect()
 }
 
 /// Files the OS asked us to open before the UI was listening.
@@ -547,7 +554,7 @@ pub fn run() {
             let files: Vec<String> = urls
                 .iter()
                 .filter_map(|u| u.to_file_path().ok())
-                .filter(|p| is_design(p))
+                .filter(|p| is_design(p) || is_cam(p))
                 .map(|p| p.to_string_lossy().to_string())
                 .collect();
             if !files.is_empty() {

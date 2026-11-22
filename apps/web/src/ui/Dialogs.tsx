@@ -750,7 +750,7 @@ export function Welcome() {
           <h3 className="eyebrow">Start</h3>
           {/* Work that would otherwise be lost comes first (audit B-9). */}
           {recovered && (
-            <button className="start-card start-card--recover start-card--primary" onClick={() => void loadDocumentConfirm(recovered.doc, recovered.fileName, true)}>
+            <button className="start-card start-card--recover start-card--primary" onClick={() => void loadDocumentConfirm(recovered.doc, recovered.fileName, true, recovered.kind)}>
               <Icon name="undo" />
               <span>
                 <b>Continue where you left off</b>

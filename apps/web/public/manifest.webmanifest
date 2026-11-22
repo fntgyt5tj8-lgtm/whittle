@@ -19,7 +19,7 @@
   "file_handlers": [
     {
       "action": "./",
-      "accept": { "application/vnd.whittle+zip": [".whittle"] }
+      "accept": { "application/vnd.whittle+zip": [".whittle"], "application/vnd.whittle.cam+zip": [".cam"] }
     }
   ]
 }
