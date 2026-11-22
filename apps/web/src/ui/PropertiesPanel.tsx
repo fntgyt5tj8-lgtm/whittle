@@ -1027,12 +1027,14 @@ function NextSteps() {
   );
 }
 
-export function PropertiesPanel() {
+export function PropertiesPanel({ content }: { content?: React.ReactNode }) {
   const session = useApp((s) => s.session);
   const mode = useApp((s) => s.mode);
   const doc = useApp((s) => s.doc);
   const regen = useApp((s) => s.regen);
   const profile = useApp((s) => s.prefs.profile);
+
+  if (content) return <aside className="panel" aria-label="Manufacturing properties"><div className="panel__body">{content}</div></aside>;
 
   if (mode.kind === "sketch") {
     const sk = findFeature(doc, mode.sketchId, "sketch");

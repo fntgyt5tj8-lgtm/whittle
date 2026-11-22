@@ -6,6 +6,7 @@ const r = (p: string) => fileURLToPath(new URL(p, import.meta.url));
 export default defineConfig({
   resolve: {
     alias: {
+      "@whittle/cam": r("./packages/cam/src/index.ts"),
       "@whittle/core": r("./packages/core/src/index.ts"),
       "@whittle/kernel": r("./packages/kernel/src/index.ts"),
     },

@@ -73,7 +73,11 @@ export function summary(f: Feature, units: string): string {
   return parts.filter(Boolean).join(" · ");
 }
 
-export function Timeline() {
+export function Timeline({ content }: { content?: React.ReactNode }) {
+  return content ? <div className="timeline" aria-label="Manufacturing timeline">{content}</div> : <CadTimeline />;
+}
+
+function CadTimeline() {
   const doc = useApp((s) => s.doc);
   const regen = useApp((s) => s.regen);
   const session = useApp((s) => s.session);
@@ -86,7 +90,10 @@ export function Timeline() {
   const [dragStep, setDragStep] = useState<{ from: number; over: number } | null>(null);
   // Steps picked for copying or folding (Shift/Ctrl+click adds); mirrored where the commands can see them.
   const [picked, setPicked] = useState<string[]>([]);
-  useEffect(() => void (timelinePick.ids = picked), [picked]);
+  useEffect(() => {
+    timelinePick.ids = picked;
+    return () => { timelinePick.ids = []; };
+  }, [picked]);
   const [folderMenu, setFolderMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   useMenuDismiss(!!folderMenu, () => setFolderMenu(null));
   const folders = (doc.folders ?? []).filter((x) => x.features.some((id) => doc.features.some((f) => f.id === id)));

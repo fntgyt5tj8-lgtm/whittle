@@ -37,6 +37,7 @@ export default defineConfig({
   plugins: [react(), offlineWorker()],
   resolve: {
     alias: {
+      "@whittle/cam": r("../../packages/cam/src/index.ts"),
       "@whittle/core": r("../../packages/core/src/index.ts"),
       "@whittle/kernel": r("../../packages/kernel/src/index.ts"),
     },

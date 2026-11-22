@@ -1,0 +1,80 @@
+.cam-properties {
+  padding: 0.75rem;
+}
+
+.cam-properties h2 {
+  margin: 0 0 0.25rem;
+  font-size: 1rem;
+}
+
+.cam-properties dd {
+  margin: 0 0 0.5rem;
+  overflow-wrap: anywhere;
+}
+
+.cam-properties select {
+  max-width: 100%;
+}
+
+.cam-properties__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+.cam-timeline {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  list-style: none;
+  margin: 0;
+  padding: 0 var(--sp-2, 8px);
+}
+
+.cam-timeline > li {
+  flex: none;
+}
+
+.cam-timeline__empty {
+  color: var(--text-3, GrayText);
+  font-size: var(--fs-sm, 0.875rem);
+  white-space: normal;
+  max-width: 100%;
+}
+
+.cam-timeline__tile,
+.cam-properties__actions button {
+  border: 1px solid var(--line, GrayText);
+  border-radius: var(--r-2, 4px);
+  background: var(--bg-2, ButtonFace);
+  color: var(--text-2, ButtonText);
+  cursor: pointer;
+}
+
+.cam-timeline__tile {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 8px;
+  white-space: nowrap;
+  transition: border-color var(--dur-fast, 120ms), background var(--dur-fast, 120ms);
+}
+
+.cam-timeline__tile:hover,
+.cam-properties__actions button:hover {
+  border-color: var(--line-strong, currentColor);
+  color: var(--text-1, ButtonText);
+}
+
+.cam-timeline__tile[aria-pressed="true"] {
+  border-color: var(--select, Highlight);
+  background: var(--select-soft, SelectedItem);
+  color: var(--text-1, SelectedItemText);
+}

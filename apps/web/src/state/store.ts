@@ -161,7 +161,7 @@ export interface AppState {
   /** The sketch palette: what the sketch canvas shows and snaps to (the grid itself is `view.grid`). */
   sketchView: SketchViewSettings;
   /** Which ribbon tab shows outside a sketch. */
-  ribbonTab: "solid" | "surface" | "tools";
+  ribbonTab: "solid" | "surface" | "tools" | "manufacturing";
   /** The parameter the Parameters dialog should put the cursor in when it opens. */
   focusParam?: string | null;
   /** Sketch geometry a panel row points at (a constraint's lines, say), lit in the view. */

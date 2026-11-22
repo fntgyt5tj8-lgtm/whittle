@@ -1,4 +1,5 @@
 import { Suspense, lazy, useEffect } from "react";
+import { ManufacturingSlots } from "./cam/Manufacturing";
 import { commandById, commandForKey, isAvailable } from "./state/commands";
 import { openDroppedFile, startAutosave, startDesktop, startLaunchQueue } from "./state/files";
 import { aiAvailable, apiHooks, detectPlatform } from "./state/platform";
@@ -8,14 +9,12 @@ import { checkForUpdate } from "./state/updates";
 import { forgetUserSettings, loadUserSettings } from "./state/userSettings";
 import { cancelSession, commitSession, finishSketch, isNarrow, setSketchTool, toast, useApp } from "./state/store";
 import { Browser } from "./ui/Browser";
-import { CommandPalette, QuickBox, StatusBar, TitleBar, Toasts, Toolbar } from "./ui/Chrome";
+import { CommandPalette, QuickBox, StatusBar, TitleBar, Toasts } from "./ui/Chrome";
 import { AccountDialog, SignIn, UsersDialog } from "./ui/Account";
 import { Coach, ExportDialog, ParamsDialog, ShortcutsDialog, VersionsDialog, Welcome } from "./ui/Dialogs";
 import { DialogHost, TooltipLayer } from "./ui/DialogHost";
 import { SettingsDialog } from "./ui/Settings";
 import { applyPrefs, resolveTheme } from "./state/prefs";
-import { PropertiesPanel } from "./ui/PropertiesPanel";
-import { Timeline } from "./ui/Timeline";
 import { ViewportView, sketchKeys } from "./ui/ViewportView";
 
 // Screens most visits never open load when first needed, not with the app (audit P-2).
@@ -217,6 +216,7 @@ export function App() {
     };
   }, []);
 
+  const manufacturingEnabled = !signedOut && mode.kind === "model" && !session;
   const editing = !!session || mode.kind === "sketch";
   const browserOpen = useApp((s) => s.browserOpen);
   const sideOpen = useApp((s) => s.panelOpen);
@@ -239,11 +239,10 @@ export function App() {
     <div className={`app ${editing ? "has-session" : ""} ${prefs.hints ? "" : "no-hints"} ${browserOpen ? "browser-open" : "browser-closed"} ${sideOpen ? "panel-open" : "panel-closed"} ${coach ? "has-coach" : ""}`}>
       {(browserOpen || (sideOpen && !editing)) && <div className="app__drawer-scrim" onClick={() => useApp.setState({ browserOpen: false, panelOpen: false })} />}
       <TitleBar />
-      <Toolbar />
-      <Browser />
-      <ViewportView />
-      <PropertiesPanel />
-      <Timeline />
+      <ManufacturingSlots enabled={manufacturingEnabled}>
+        <Browser />
+        <ViewportView />
+      </ManufacturingSlots>
       <StatusBar />
       <Coach />
       <Toasts />

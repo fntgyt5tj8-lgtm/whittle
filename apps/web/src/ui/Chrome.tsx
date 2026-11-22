@@ -388,7 +388,7 @@ const wheelX = (e: React.WheelEvent<HTMLElement>) => {
 };
 
 /** The ribbon: workspace tabs over the tool groups of the chosen tab (a sketch shows its own contextual tab). */
-export function Toolbar() {
+export function Toolbar({ manufacturing }: { manufacturing?: { label: string; activate: () => void; content: React.ReactNode } }) {
   const mode = useApp((s) => s.mode);
   const simple = useApp((s) => simpleToolbar(s.prefs));
   // A design that already has surfaces keeps the Surface tab, whatever the profile.
@@ -400,7 +400,9 @@ export function Toolbar() {
     ...(!simple || hasSurfaces ? [{ id: "surface" as const, label: "Surface" }] : []),
     ...(!simple ? [{ id: "tools" as const, label: "Tools" }] : []),
   ];
-  const tab = tabs.some((t) => t.id === chosen) ? chosen : "solid";
+  const tab = chosen !== "manufacturing" && tabs.some((t) => t.id === chosen) ? chosen : "solid";
+  const manufacturingActive = chosen === "manufacturing" && !!manufacturing;
+  const labels = useApp((s) => s.prefs.toolLabels);
   return (
     <div className="ribbon">
       <div className="ribbon__tabs" role="tablist" aria-label="Workspace">
@@ -410,10 +412,14 @@ export function Toolbar() {
           </button>
         ) : (
           tabs.map((t) => (
-            <button key={t.id} role="tab" aria-selected={tab === t.id} className={`ribbon__tab ${tab === t.id ? "is-active" : ""}`} onClick={() => useApp.setState({ ribbonTab: t.id })}>
+            <button key={t.id} role="tab" aria-selected={!manufacturingActive && tab === t.id} className={`ribbon__tab ${!manufacturingActive && tab === t.id ? "is-active" : ""}`} onClick={() => useApp.setState({ ribbonTab: t.id })}>
               {t.label}
             </button>
           ))
+        )}
+        {!sketching && manufacturing && (
+          <button role="tab" aria-selected={manufacturingActive} className={`ribbon__tab ${manufacturingActive ? "is-active" : ""}`}
+            onClick={manufacturing.activate}>{manufacturing.label}</button>
         )}
         {!sketching && (
           <button
@@ -425,7 +431,11 @@ export function Toolbar() {
           </button>
         )}
       </div>
-      <RibbonBody tab={tab} />
+      {manufacturingActive ? (
+        <div className={`toolbar ${labels ? "" : "toolbar--icons"}`} role="toolbar" aria-label={manufacturing.label}>
+          <div className="toolbar__scroll" onWheel={wheelX}>{manufacturing.content}</div>
+        </div>
+      ) : <RibbonBody tab={tab} />}
     </div>
   );
 }

@@ -1,3 +1,4 @@
+
 {
   "compilerOptions": {
     "target": "ES2022",
@@ -16,10 +17,18 @@
     "types": ["vite/client", "node"],
     "baseUrl": ".",
     "paths": {
+      "@whittle/cam": ["packages/cam/src/index.ts"],
       "@whittle/core": ["packages/core/src/index.ts"],
       "@whittle/kernel": ["packages/kernel/src/index.ts"],
       "@whittle/kernel/*": ["packages/kernel/src/*"]
     }
   },
-  "include": ["packages/*/src", "packages/*/test", "apps/web/src", "apps/web/test", "apps/web/vite.config.ts", "vitest.config.ts"]
+  "include": [
+    "packages/*/src",
+    "packages/*/test",
+    "apps/web/src",
+    "apps/web/test",
+    "apps/web/vite.config.ts",
+    "vitest.config.ts"
+  ]
 }
