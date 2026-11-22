@@ -201,16 +201,17 @@ try {
   await manufacturing.click();
   await addProfile.click();
   await properties.getByRole("heading", { name: "Profile 3" }).waitFor();
-  const useSketch = properties.getByRole("button", { name: "Use Selected Sketch" });
-  assert.equal(await useSketch.isDisabled(), true);
+  const pickSketch = properties.getByRole("button", { name: "Pick Sketch", exact: true });
+  await pickSketch.click();
+  await properties.getByRole("button", { name: "Cancel Sketch Pick" }).click();
+  await pickSketch.click();
   const sketchRow = page.getByRole("navigation", { name: "Design browser" })
     .getByRole("button", { name: "CAM test circle", exact: true });
   await sketchRow.click();
-  await useSketch.click();
   await properties.getByText("CAM test circle", { exact: true }).waitFor();
   await first.click();
-  await page.evaluate(() => window.whittle.useApp.setState({ selection: [] }));
-  assert.equal(await useSketch.isDisabled(), true);
+  await pickSketch.click();
+  await page.waitForFunction(() => window.whittle.viewportRef.current.filter.sketchesOnly);
   await page.evaluate(() => window.whittle.viewportRef.current.viewTo("top"));
   await page.waitForFunction(() => !window.whittle.viewportRef.current.anim);
   const sketchPoint = await page.evaluate(() => {
@@ -232,9 +233,15 @@ try {
   });
   assert.ok(sketchPoint, "The circle can be picked in the 3D view");
   await page.mouse.click(...sketchPoint);
-  await useSketch.click();
   await properties.getByText("CAM test circle", { exact: true }).waitFor();
   await history.getByRole("button", { name: "Profile 3 · Main machining" }).click();
+  await properties.getByLabel("Cut feed (mm/min)").fill("200");
+  await properties.getByRole("button", { name: "Remove Sketch", exact: true }).click();
+  assert.equal(await properties.getByRole("button", { name: "Export APT-CL" }).count(), 0);
+  assert.equal(await properties.getByLabel("Cut feed (mm/min)").inputValue(), "200");
+  await pickSketch.click();
+  await sketchRow.click();
+  await properties.getByText("CAM test circle", { exact: true }).waitFor();
   await properties.getByLabel("Flat endmill diameter (mm)").fill("4");
   await properties.getByLabel("Cut depth (mm)").fill("2");
   await properties.getByLabel("Clearance above sketch (mm)").fill("5");

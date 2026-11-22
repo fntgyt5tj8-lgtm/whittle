@@ -26,6 +26,7 @@ const samePick = (a: Pick, b: Pick) => JSON.stringify({ ...a, at: 0 }) === JSON.
 export type CubeView = "front" | "back" | "left" | "right" | "top" | "bottom" | "iso";
 
 export interface PickFilter {
+  sketchesOnly?: boolean;
   datums?: boolean;
   datumInputs?: ReadonlySet<Id>;
   csysGeometry?: "vertex" | "edge";
@@ -1440,7 +1441,7 @@ export class Viewport {
     const usePick = this.pickBodies.length > 0 || !!this.filter.csysGeometry;
     const views = usePick ? this.pickBodies : [...this.bodies.values()].filter((v) => v.visible);
     this.raycaster.setFromCamera(this.ndc(e), this.camera);
-    const meshes = views.map((v) => v.mesh);
+    const meshes = this.filter.sketchesOnly ? [] : views.map((v) => v.mesh);
     if (usePick) for (const m of meshes) m.visible = true;
     const hits = this.raycaster.intersectObjects(meshes, false);
     if (usePick) for (const m of meshes) m.visible = false;

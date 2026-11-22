@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   CAM_WORLD, addProcess, addSetup, getProcessPlan, validateOperationTooling, validateProject,
-  type CamMachiningStage, type CamPlanItem, type CamProject, type CamSetup, type CircularProfileSettings,
+  type CamGeometryRef, type CamMachiningStage, type CamPlanItem, type CamProject, type CamSetup, type CircularProfileSettings,
 } from "@whittle/cam";
 import type { CamCadAdapter } from "../cadAdapter";
 import { demoMachine, demoTracks, trackKey } from "../machine";
@@ -28,11 +28,17 @@ export function useCamWorkspace(
   setProject: (update: (current: CamProject) => CamProject, label: string, mergeKey?: string) => void,
   openProperties: () => void,
   sourceErrors: readonly string[],
+  canPickSketch: boolean,
+  startSketchPick: () => void,
 ) {
+  const [sketchPick, setSketchPick] = useState<{ documentId?: string; key?: string }>();
   const [selection, setSelection] = useState<{ documentId?: string; key?: string }>({});
   const [contextSelection, setContextSelection] = useState<{ documentId?: string; setupId?: string; id?: string }>({});
   const selectedKey = selection.documentId === documentId ? selection.key : undefined;
-  const setSelectedKey = (key?: string) => setSelection({ documentId, key });
+  const setSelectedKey = (key?: string) => {
+    setSketchPick(undefined);
+    setSelection({ documentId, key });
+  };
 
   const plan = getProcessPlan(project);
   const selectedItem = plan.find((item) => itemKey(item) === selectedKey);
@@ -72,17 +78,36 @@ export function useCamWorkspace(
 
   const selectedSketch = cad.getSelection().find((ref) => ref.kind === "sketch");
   const contourName = process?.contour && cad.resolveGeometry(process.contour)?.name;
-  const canAssignSketch = !!process && !!selectedSketch
-    && (selectedSketch.entityId !== process.contour?.entityId || selectedSketch.documentId !== process.contour?.documentId)
-    && !!cad.resolveCircularProfile?.(selectedSketch);
+  const pickingSketch = !!process && canPickSketch && !!sketchPick
+    && sketchPick.documentId === documentId && sketchPick.key === selectedKey;
+  const selectedSketchValid = !!selectedSketch && !!cad.resolveCircularProfile?.(selectedSketch);
 
-  function assignSelectedSketch() {
-    if (!process || !selectedSketch || !canAssignSketch) return;
+  function changeContour(contour: CamGeometryRef | undefined) {
+    if (!process) return;
     setProject((current) => ({
       ...current,
-      processes: current.processes.map((item) => item.id === process.id ? { ...item, contour: selectedSketch } : item),
-    }), "Assign operation profile sketch");
+      processes: current.processes.map((item) => item.id === process.id ? { ...item, contour } : item),
+    }), contour ? "Assign operation profile sketch" : "Remove operation profile sketch");
+    setSketchPick(undefined);
   }
+
+  useEffect(() => {
+    if (pickingSketch && selectedSketchValid) {
+      changeContour(selectedSketch);
+      openProperties();
+    } else if (!canPickSketch && sketchPick) {
+      setSketchPick(undefined);
+    }
+  });
+
+  useEffect(() => {
+    if (!pickingSketch) return;
+    const cancel = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setSketchPick(undefined);
+    };
+    window.addEventListener("keydown", cancel, true);
+    return () => window.removeEventListener("keydown", cancel, true);
+  }, [pickingSketch]);
 
   const tools = project.toolPositions ?? [];
   const operationTool = tools.find((tool) => tool.id === process?.toolPositionId);
@@ -248,10 +273,18 @@ export function useCamWorkspace(
           <dd>{contourName ?? (process.contour ? "Unavailable" : "Unassigned")}</dd>
         </dl>
         <div className="cam-properties__actions">
-          <button type="button" disabled={!canAssignSketch} onClick={assignSelectedSketch}>Use Selected Sketch</button>
+          <button type="button" aria-pressed={pickingSketch} onClick={() => {
+            if (pickingSketch) setSketchPick(undefined);
+            else {
+              startSketchPick();
+              setSketchPick({ documentId, key: selectedKey });
+            }
+          }}>{pickingSketch ? "Cancel Sketch Pick" : process.contour ? "Replace Sketch" : "Pick Sketch"}</button>
+          {process.contour && <button type="button" onClick={() => changeContour(undefined)}>Remove Sketch</button>}
         </div>
-        {!canAssignSketch && (!process.contour || !cad.resolveCircularProfile?.(process.contour)) &&
-          <p>Select a sketch with one circle in the 3D view or Browser.</p>}
+        {pickingSketch && <p role="status">{selectedSketch && !selectedSketchValid
+          ? "Choose a built sketch with one circle."
+          : "Click a sketch in the 3D view or Browser."}</p>}
       </>}
       {process && <ProfileExport key={`${documentId}/${process.id}/${process.contour?.entityId ?? ""}/${process.toolPositionId ?? ""}/${operationTool?.cutting?.diameter ?? ""}`}
         name={process.id} settings={process.profile} onChange={changeProfile} resolveFrame={resolveFrame} validateReferences={operationErrors}
@@ -297,5 +330,5 @@ export function useCamWorkspace(
     </ol>
   );
 
-  return { commands, properties, timeline };
+  return { commands, properties, timeline, pickingSketch };
 }

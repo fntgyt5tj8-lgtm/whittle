@@ -142,6 +142,7 @@ export interface AppState {
   camBrowserTab: "browser" | "tools";
   camToolSelection: CamToolSelection | null;
   isolatedToolId: Id | null;
+  camProfileSketchPicking: boolean;
   hover: Pick | null;
   /** Edges the pointer rests on while a fillet or chamfer is open: the model previews them as if picked. */
   hoverEdges: EdgeRef[] | null;
@@ -210,6 +211,7 @@ export const useApp = create<AppState>(() => ({
   camBrowserTab: "browser",
   camToolSelection: null,
   isolatedToolId: null,
+  camProfileSketchPicking: false,
   hover: null,
   hoverEdges: null,
   selectedEntity: null,
@@ -315,6 +317,7 @@ export function replaceDocument(doc: WhittleDocument, fileName: string | null, d
     camBrowserTab: "browser",
     camToolSelection: null,
     isolatedToolId: null,
+    camProfileSketchPicking: false,
     ribbonTab: documentKind === "cam" ? "manufacturing" : "solid",
     fileName,
     dirty: false,

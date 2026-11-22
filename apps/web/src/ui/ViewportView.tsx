@@ -541,6 +541,7 @@ export function ViewportView() {
 
   const doc = useApp((s) => s.doc);
   const regen = useApp((s) => s.regen);
+  const camProfileSketchPicking = useApp((s) => s.camProfileSketchPicking);
   const isolatedToolId = useApp((s) => s.isolatedToolId);
   const isolatedTool = doc.manufacturing?.toolPositions?.find((tool) => tool.id === isolatedToolId);
   const mode = useApp((s) => s.mode);
@@ -822,9 +823,13 @@ export function ViewportView() {
         return !source.suppressed && kind && kinds.includes(kind);
       }).map((source) => source.id))
       : undefined;
+    if (camProfileSketchPicking) {
+      vp.setPickFilter({ faces: false, edges: false, planes: false, sketches: true, sketchesOnly: true });
+      return;
+    }
     vp.setPickFilter({ ...filter, datumInputs, datums: !!datumInputs || mode.kind === "pickPlane" || (mode.kind === "model" && !session && priority === "all") });
     vp.setPlanesVisible(mode.kind === "pickPlane");
-  }, [vp, mode, session, sessionFeature, priority, doc.features]);
+  }, [vp, mode, session, sessionFeature, priority, doc.features, camProfileSketchPicking]);
 
   // A lesson that asks for one plane lights that plane while picking (audit B-2).
   const coach = useApp((s) => s.coach);

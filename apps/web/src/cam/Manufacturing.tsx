@@ -1,6 +1,6 @@
 import type { Draft } from "immer";
 import { createProject, migrateWorkpieceContexts, type CamProject } from "@whittle/cam";
-import type { ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 import { manufacturingLabel, useCamWorkspace } from "./ui/CamWorkspace";
 import { isNarrow, mutate, useApp } from "../state/store";
 import { commandById } from "../state/commands";
@@ -37,7 +37,12 @@ export function ManufacturingSlots({ enabled, children }: { enabled: boolean; ch
     return status?.state === "error" ? [`${f.name}: ${status.message ?? "CAD source unavailable."}`] : [];
   });
   const cam = useCamWorkspace(whittleCad, doc.id, migrateWorkpieceContexts((isCam && doc.manufacturing) || emptyProject),
-    saveProject, openProperties, sourceErrors);
+    saveProject, openProperties, sourceErrors, active && !editing && !toolSelection,
+    () => useApp.setState({ selection: [], hover: null, camBrowserTab: "browser" }));
+  useEffect(() => {
+    useApp.setState({ camProfileSketchPicking: cam.pickingSketch });
+    return () => useApp.setState({ camProfileSketchPicking: false });
+  }, [cam.pickingSketch]);
   const ribbon = enabled ? {
     label: manufacturingLabel,
     activate: () => useApp.setState({ ribbonTab: "manufacturing", ...(isNarrow() ? { panelOpen: false } : {}) }),
