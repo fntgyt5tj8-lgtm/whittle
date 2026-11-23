@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { addPlanStage, addProcess, addSetup, createProject, getProcessPlan, migrateWorkpieceContexts, validateProject, type CamSetup } from "../src";
+import { activePlanEnd, deletePlannedOperation, movePlannedOperation, plannedOperations, rollBackPlan, addPlanStage, addProcess, addSetup, createProject, getProcessPlan, migrateWorkpieceContexts, validateProject, type CamSetup } from "../src";
+import { isCamProject } from "../src/validation";
 
 const setup: CamSetup = {
   id: "setup-1",
@@ -74,6 +75,47 @@ describe("CAM project", () => {
       "Setup IDs must be present and unique.",
       "Each process needs an existing setup.",
     ]);
+  });
+});
+
+describe("Manufacturing history", () => {
+  const first = { ...profile, profile: { depth: "2" }, track: { unitId: "unit-1", id: "track-2" } };
+  const second = { ...profile, id: "profile-2", suppressed: true };
+  const third = { ...profile, id: "profile-3" };
+  const otherSetup = { ...setup, id: "setup-2" };
+  const other = { ...profile, id: "profile-4", setupId: otherSetup.id };
+  const draft = {
+    ...createProject("Bracket"), setups: [setup, otherSetup], processes: [first, second, third, other], processPlan: undefined,
+  };
+
+  it("uses matching plan order and keeps operation identity and settings", () => {
+    const reordered = movePlannedOperation(draft, third.id, first.id);
+    expect(plannedOperations(reordered, setup.id)).toEqual([third, first]);
+    expect(reordered.processes).toBe(draft.processes);
+    expect(reordered.setups).toBe(draft.setups);
+    expect(plannedOperations(reordered, otherSetup.id)).toEqual([other]);
+    expect(movePlannedOperation(reordered, first.id, other.id)).toBe(reordered);
+
+    const transfer = { kind: "transfer", id: "transfer", setupId: setup.id } as const;
+    const plan = getProcessPlan(reordered);
+    const withTransfer = { ...reordered, processPlan: [plan[0]!, transfer, ...plan.slice(1)] };
+    expect(movePlannedOperation(withTransfer, first.id, third.id)).toBe(withTransfer);
+  });
+
+  it("persists suppression and rollback, and adjusts the marker when deleting", () => {
+    const rolledBack = rollBackPlan(draft, 3);
+    const saved = JSON.parse(JSON.stringify(rolledBack));
+    expect(isCamProject(saved)).toBe(true);
+    expect(isCamProject({ ...saved, planRollback: -1 })).toBe(false);
+    expect(isCamProject({ ...saved, processes: [{ ...first, suppressed: "yes" }] })).toBe(false);
+    expect(activePlanEnd(saved)).toBe(3);
+    expect(plannedOperations(saved)).toEqual([first, third]);
+    const deleted = deletePlannedOperation(saved, first.id);
+    expect(activePlanEnd(deleted)).toBe(2);
+    expect(plannedOperations(deleted)).toEqual([third]);
+    expect(validateProject(deleted)).toEqual([]);
+    expect(plannedOperations(rollBackPlan(deleted, 3))).toEqual([third, other]);
+    expect(plannedOperations(rollBackPlan(deleted, 0))).toEqual([]);
   });
 });
 

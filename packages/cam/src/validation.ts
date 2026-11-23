@@ -154,6 +154,8 @@ export function isCamProject(value: unknown): value is CamProject {
   };
 
   return record(value) && value.schemaVersion === 1 && typeof value.name === "string"
+    && (value.planRollback === undefined || (typeof value.planRollback === "number"
+      && Number.isSafeInteger(value.planRollback) && value.planRollback >= 0))
     && (value.toolPositions === undefined || (Array.isArray(value.toolPositions) && value.toolPositions.every(toolPosition)))
     && (value.tooling === undefined || record(value.tooling))
     && Array.isArray(value.setups) && value.setups.every((item) => record(item)
@@ -162,6 +164,7 @@ export function isCamProject(value: unknown): value is CamProject {
       && (item.contexts === undefined ? geometry(item.part) : Array.isArray(item.contexts) && item.contexts.every(context)))
     && Array.isArray(value.processes) && value.processes.every((item) => record(item)
       && typeof item.id === "string" && typeof item.name === "string" && typeof item.setupId === "string"
+      && (item.suppressed === undefined || typeof item.suppressed === "boolean")
       && (item.contextId === undefined || typeof item.contextId === "string")
       && (item.toolPositionId === undefined || (typeof item.toolPositionId === "string" && !!item.toolPositionId.trim()))
       && (item.kind === "profile" || item.kind === "pocket" || item.kind === "adaptive" || item.kind === "facing") && (item.contour === undefined || geometry(item.contour))
@@ -188,8 +191,18 @@ export function isCamProject(value: unknown): value is CamProject {
       && (item.contourMilling === undefined || (record(item.contourMilling)
         && (item.contourMilling.side === "center" || item.contourMilling.side === "left" || item.contourMilling.side === "right")
         && (item.contourMilling.direction === "forward" || item.contourMilling.direction === "reverse")
+        && (item.contourMilling.millingDirection === undefined || item.contourMilling.millingDirection === "manual"
+          || item.contourMilling.millingDirection === "climb" || item.contourMilling.millingDirection === "conventional")
+        && (item.contourMilling.spindleDirection === undefined || item.contourMilling.spindleDirection === "cw"
+          || item.contourMilling.spindleDirection === "ccw")
+        && (item.contourMilling.optimiseRetracts === undefined || typeof item.contourMilling.optimiseRetracts === "boolean")
+        && (item.contourMilling.aptCutcom === undefined || typeof item.contourMilling.aptCutcom === "boolean")
         && typeof item.contourMilling.depth === "string" && typeof item.contourMilling.clearance === "string"
-        && [item.contourMilling.stepdown, item.contourMilling.leadIn, item.contourMilling.leadOut]
+        && [item.contourMilling.stepdown, item.contourMilling.leadIn, item.contourMilling.leadOut,
+          item.contourMilling.arcLeadIn, item.contourMilling.arcLeadOut,
+          item.contourMilling.arcLeadInRadius, item.contourMilling.arcLeadOutRadius,
+          item.contourMilling.normalLeadIn, item.contourMilling.normalLeadOut, item.contourMilling.seam,
+          item.contourMilling.stockAllowance, item.contourMilling.radialIncrement, item.contourMilling.finishAllowance]
           .every((value) => value === undefined || typeof value === "string")))
       && ((item.kind === "pocket" || item.kind === "adaptive") ? (item.profile === undefined && item.contourMilling === undefined && record(item.pocketMilling)
         && typeof item.pocketMilling.depth === "string" && typeof item.pocketMilling.clearance === "string"

@@ -45,6 +45,36 @@ const box = (page, sel) => page.locator(sel).first().boundingBox();
   expect((await box(page, ".browser")) !== null, "browser comes back");
   await page.screenshot({ path: `${out}/wide.png` });
   console.log("ok  wide: panels collapse");
+  const canvas = await box(page, ".viewport canvas");
+  const x = canvas.x + canvas.width / 4;
+  const y = canvas.y + canvas.height / 2;
+  const state = () => page.evaluate(() => {
+    const vp = window.whittle.viewportRef.current;
+    return { up: vp.camera.up.toArray(), back: vp.camera.getWorldDirection(vp.camera.position.clone()).negate().toArray() };
+  });
+  for (const sign of [1, -1]) {
+    await page.evaluate(() => window.whittle.viewportRef.current.viewTo("front"));
+    await page.waitForFunction(() => Math.abs(window.whittle.viewportRef.current.camera.up.z - 1) < 1e-8);
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.mouse.move(x, y + sign * 208, { steps: 16 });
+    const pole = await state();
+    expect(sign * pole.back[2] > 0.999, "vertical drag reaches the pole", pole);
+    await page.mouse.move(x, y + sign * 280, { steps: 6 });
+    await page.mouse.up();
+    const across = await state();
+    expect(across.back[1] > 0.45 && across.up[2] < -0.45, "vertical drag continues past the pole", across);
+    expect(await page.evaluate(() => window.whittle.useApp.getState().selection.length) === 0, "orbit drag does not select");
+  }
+  console.log("ok  wide: mouse orbit crosses both poles");
+  for (const [view, sign] of [["top", 1], ["bottom", -1]]) {
+    await page.evaluate((name) => window.whittle.viewportRef.current.viewTo(name), view);
+    await page.waitForFunction((s) => {
+      const { camera } = window.whittle.viewportRef.current;
+      return Math.abs(camera.up.y - s) < 1e-8 && Math.abs(camera.getWorldDirection(camera.position.clone()).z + s) < 1e-8;
+    }, sign);
+  }
+  console.log("ok  wide: top and bottom restore their standard orientations");
   await page.context().close();
 }
 
@@ -81,7 +111,8 @@ const box = (page, sel) => page.locator(sel).first().boundingBox();
   for (let i = 1; i <= 8; i++) await touch("touchMove", [[200 + i * 12, 300]]);
   await touch("touchEnd", []);
   const c1 = await cam();
-  expect(Math.abs(c1.theta - c0.theta) > 0.2, "one finger orbits", [c0, c1]);
+  const orientationDot = (a, b) => Math.abs(a.orientation.reduce((sum, v, i) => sum + v * b.orientation[i], 0));
+  expect(orientationDot(c0, c1) < 0.99, "one finger orbits", [c0, c1]);
   expect(await page.evaluate(() => window.whittle.useApp.getState().selection.length) === 0, "a drag selects nothing");
 
   await touch("touchStart", [[150, 300], [250, 300]]);
@@ -89,7 +120,7 @@ const box = (page, sel) => page.locator(sel).first().boundingBox();
   await touch("touchEnd", []);
   const c2 = await cam();
   expect(c2.distance < c1.distance * 0.7, "pinching out zooms in", [c1.distance, c2.distance]);
-  expect(Math.abs(c2.theta - c1.theta) < 0.01, "a pinch doesn't orbit", [c1, c2]);
+  expect(orientationDot(c1, c2) > 0.99999, "a pinch doesn't orbit", [c1, c2]);
 
   await touch("touchStart", [[150, 300], [250, 300]]);
   for (let i = 1; i <= 8; i++) await touch("touchMove", [[150 + i * 10, 300 + i * 6], [250 + i * 10, 300 + i * 6]]);

@@ -512,11 +512,18 @@ export function addArc(sk: Geo, a: Vec2 | Id, b: Vec2 | Id, through: Vec2, const
   const ang = (p: Vec2) => Math.atan2(p[1] - c[1], p[0] - c[0]);
   // Arcs run counter-clockwise: swap the ends when the bulge is on the other side.
   const forward = ccw(ang(through) - ang(pa)) < ccw(ang(pb) - ang(pa));
+  const ia = pointId(sk, a);
+  const ib = pointId(sk, b);
+  return addArcFromCenter(sk, forward ? ia : ib, forward ? ib : ia, c, construction);
+}
+
+/** Add a counterclockwise arc with a known center. */
+export function addArcFromCenter(sk: Geo, a: Vec2 | Id, b: Vec2 | Id, c: Vec2, construction = false): Id {
   const id = uid("a");
   const ia = pointId(sk, a);
   const ib = pointId(sk, b);
   const ic = addPoint(sk, c, true);
-  sk.geometry!.push({ id, type: "arc", c: ic, a: forward ? ia : ib, b: forward ? ib : ia, ...(construction ? { construction } : {}) });
+  sk.geometry!.push({ id, type: "arc", c: ic, a: ia, b: ib, ...(construction ? { construction } : {}) });
   return id;
 }
 

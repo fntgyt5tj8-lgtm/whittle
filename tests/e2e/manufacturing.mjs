@@ -83,8 +83,15 @@ try {
   const timeline = page.getByLabel("Manufacturing timeline");
   const setup = page.getByRole("button", { name: "Create setup" });
   assert.equal(await setup.isEnabled(), true);
+  const setupSelector = timeline.getByRole("button", { name: "Timeline setup", exact: true });
+  const setupOptions = page.getByRole("listbox", { name: "Timeline setup" });
+  async function selectSetup(name) {
+    await setupSelector.click();
+    await setupOptions.getByRole("option", { name, exact: true }).click();
+  }
   const history = timeline.getByRole("list", { name: "Part history" });
   const tiles = history.getByRole("button");
+  const tileNames = () => tiles.evaluateAll((buttons) => buttons.map((button) => button.getAttribute("aria-label")));
   assert.equal(await tiles.count(), 0);
 
   await page.evaluate(() => {
@@ -113,7 +120,9 @@ try {
   await setup.click();
   await setupName.fill("Temporary setup");
   await properties.getByRole("button", { name: "Delete setup" }).click();
-  assert.equal(await history.getByRole("button", { name: "Temporary setup" }).count(), 0);
+  await setupSelector.click();
+  assert.deepEqual(await setupOptions.getByRole("option").allTextContents(), ["Primary machining"]);
+  await setupSelector.press("Escape");
 
   const contextPicker = properties.getByLabel("Workpiece context", { exact: true });
   const contextList = properties.getByRole("list", { name: "Workpiece contexts" });
@@ -155,7 +164,6 @@ try {
   assert.equal(await contextPanel.count(), 0);
 
   const addProfile = page.getByRole("button", { name: "Add profile" });
-  const setupTile = history.getByRole("button", { name: "Primary machining" });
   const track = properties.getByLabel("Execution track");
   const machiningStage = properties.getByLabel("Machining stage");
 
@@ -165,26 +173,61 @@ try {
   await track.selectOption({ label: "Secondary Track · Channel 2" });
   await properties.getByText("Execution Unit 1", { exact: true }).filter({ visible: true }).waitFor();
 
-  await setupTile.click();
+  await selectSetup("Primary machining");
   assert.equal(await contextPanel.count(), 0);
   await addProfile.click();
   await machiningStage.selectOption({ label: "Sub / back-working" });
   await track.selectOption({ label: "Main Track · Channel 1" });
-  await setupTile.click();
+  await selectSetup("Primary machining");
 
-  const expected = ["Primary machining", "Profile 1 · Main machining", "Profile 2 · Sub / back-working"];
-  assert.deepEqual(await tiles.allTextContents(), expected);
+  const expected = ["Profile 1 · Main machining", "Profile 2 · Sub / back-working"];
+  assert.deepEqual(await tileNames(), expected);
+  await setup.click();
+  assert.deepEqual(await tileNames(), []);
+  await properties.getByRole("button", { name: "Add Context" }).click();
+  await addProfile.click();
+  assert.deepEqual(await tileNames(), ["Profile 3 · Main machining"]);
+  await setupSelector.click();
+  assert.deepEqual(await setupOptions.getByRole("option").allTextContents(), ["Primary machining", "Setup 2"]);
+  assert.ok((await setupOptions.boundingBox()).y + (await setupOptions.boundingBox()).height < (await setupSelector.boundingBox()).y);
+  await setupOptions.getByRole("option", { name: "Primary machining", exact: true }).click();
+  assert.deepEqual(await tileNames(), expected);
+  await page.mouse.move(0, 0);
+  await setupSelector.press("ArrowUp");
+  await setupOptions.waitFor();
+  await setupSelector.press("End");
+  await setupSelector.press("Enter");
+  await history.getByRole("button", { name: "Profile 3 · Main machining" }).waitFor();
+  assert.deepEqual(await tileNames(), ["Profile 3 · Main machining"]);
+  await timeline.getByRole("button", { name: "Step back", exact: true }).click();
+  assert.match(await tiles.first().getAttribute("class"), /step--rolledback/);
+  await selectSetup("Primary machining");
+  assert.equal(await history.locator(".step--rolledback").count(), 0);
+  await selectSetup("Setup 2");
+  await timeline.getByRole("button", { name: "Step forward", exact: true }).click();
+  await tiles.first().click();
+  await tiles.first().click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Delete", exact: true }).click();
+  await page.getByRole("alertdialog", { name: "Delete operation" }).getByRole("button", { name: "Delete", exact: true }).click();
+  assert.equal(await setupSelector.textContent(), "Setup 2");
+  await properties.getByRole("button", { name: "Delete setup" }).click();
+  assert.deepEqual(await tileNames(), expected);
+  const selectorBox = await setupSelector.boundingBox();
+  const navigationBox = await timeline.locator(".timeline__controls").boundingBox();
+  const firstTileBox = await tiles.first().boundingBox();
+  assert.ok(selectorBox.x < navigationBox.x && navigationBox.x < firstTileBox.x);
+  assert.ok(Math.abs(selectorBox.y + selectorBox.height / 2 - firstTileBox.y - firstTileBox.height / 2) < 1);
   const topPositions = await tiles.evaluateAll((buttons) => buttons.map((button) => button.getBoundingClientRect().top));
   assert.equal(new Set(topPositions).size, 1);
 
-  const first = history.getByRole("button", { name: expected[1] });
+  const first = history.getByRole("button", { name: expected[0] });
   await first.focus();
   await first.press("Enter");
   assert.equal(await first.getAttribute("aria-pressed"), "true");
   assert.equal(await track.inputValue(), "unit-1/track-2");
   await track.selectOption({ label: "Unassigned" });
-  assert.deepEqual(await tiles.allTextContents(), expected);
-  await setupTile.click();
+  assert.deepEqual(await tileNames(), expected);
+  await selectSetup("Primary machining");
   await first.click();
   assert.equal(await track.inputValue(), "");
 
@@ -195,8 +238,63 @@ try {
   assert.equal(await cadTimeline.evaluate((bar) => bar.getBoundingClientRect().height), manufacturingHeight);
   await manufacturing.click();
   await first.waitFor();
-  assert.deepEqual(await tiles.allTextContents(), expected);
+  assert.deepEqual(await tileNames(), expected);
   assert.equal(await viewport.evaluate((canvas) => canvas === document.querySelector(".viewport canvas")), true);
+  const cadHistory = () => page.evaluate(() => {
+    const { features, rollback } = window.whittle.useApp.getState().doc;
+    return { features, rollback };
+  });
+  const originalCadHistory = await cadHistory();
+  const marker = timeline.getByRole("slider", { name: "Timeline marker" });
+  assert.deepEqual(await timeline.locator(".timeline__controls button").evaluateAll((buttons) =>
+    buttons.map((button) => button.getAttribute("aria-label"))), ["Roll back to start", "Step back", "Step forward", "Go to end"]);
+  assert.equal(await first.textContent(), "");
+  await first.press("F2");
+  const rename = page.getByRole("dialog", { name: "Rename operation" });
+  await rename.getByLabel("Name").fill("First pass");
+  await rename.getByRole("button", { name: "Rename" }).click();
+  const renamed = history.getByRole("button", { name: "First pass · Main machining" });
+  await renamed.click({ button: "right" });
+  const menu = page.getByRole("menu");
+  assert.equal(await menu.getByRole("menuitem", { name: "Copy" }).isDisabled(), true);
+  assert.equal(await menu.getByRole("menuitem", { name: "Put in a folder" }).isDisabled(), true);
+  assert.equal(await menu.getByRole("menuitem", { name: "Move later" }).isDisabled(), true);
+  await menu.getByRole("menuitem", { name: "Turn off (suppress)", exact: true }).click();
+  assert.match(await renamed.getAttribute("class"), /step--suppressed/);
+  await renamed.click({ button: "right" });
+  await menu.getByRole("menuitem", { name: "Turn back on", exact: true }).click();
+  await renamed.click({ button: "right" });
+  await menu.getByRole("menuitem", { name: "Roll back to before this", exact: true }).click();
+  assert.equal(await marker.getAttribute("aria-valuenow"), "0");
+  assert.match(await renamed.getAttribute("class"), /step--rolledback/);
+  await timeline.getByRole("button", { name: "Step forward", exact: true }).click();
+  assert.equal(await marker.getAttribute("aria-valuenow"), "1");
+  await timeline.getByRole("button", { name: "Step back", exact: true }).click();
+  await timeline.getByRole("button", { name: "Go to end", exact: true }).click();
+  assert.equal(await marker.getAttribute("aria-valuenow"), "2");
+  await renamed.press("F2");
+  await rename.getByLabel("Name").fill("Profile 1");
+  await rename.getByRole("button", { name: "Rename" }).click();
+  const second = history.getByRole("button", { name: expected[1], exact: true });
+  await second.click();
+  await machiningStage.selectOption({ label: "Main machining" });
+  const secondMain = history.getByRole("button", { name: "Profile 2 · Main machining", exact: true });
+  await secondMain.click({ button: "right" });
+  await menu.getByRole("menuitem", { name: "Move earlier", exact: true }).click();
+  assert.deepEqual(await tileNames(), ["Profile 2 · Main machining", expected[0]]);
+  await secondMain.press("Alt+ArrowRight");
+  await machiningStage.selectOption({ label: "Sub / back-working" });
+  assert.deepEqual(await tileNames(), expected);
+
+  await selectSetup("Primary machining");
+  await addProfile.click();
+  const temporary = history.getByRole("button", { name: "Profile 3 · Main machining", exact: true });
+  await temporary.click({ button: "right" });
+  await menu.getByRole("menuitem", { name: "Delete", exact: true }).click();
+  await page.getByRole("alertdialog", { name: "Delete operation" }).getByRole("button", { name: "Delete", exact: true }).click();
+  assert.deepEqual(await tileNames(), expected);
+  assert.deepEqual(await cadHistory(), originalCadHistory);
+  await first.click();
   console.log("ok  Manufacturing part history, selection, track assignment and native workspace switching");
 
   await page.evaluate(() => window.whittle.api.run("add_sketch", {
@@ -258,11 +356,13 @@ try {
   await properties.getByLabel("Cut feed (mm/min)").fill("200");
   await properties.getByLabel("Plunge feed (mm/min)").fill("50");
 
+  const waitForBuilt = () => page.waitForFunction(() => {
+    const { builtDoc, doc } = window.whittle.useApp.getState();
+    return builtDoc === doc;
+  });
+
   async function exportProfile() {
-    await page.waitForFunction(() => {
-      const { builtDoc, doc } = window.whittle.useApp.getState();
-      return builtDoc === doc;
-    });
+    await waitForBuilt();
     const [download] = await Promise.all([
       page.waitForEvent("download", { timeout: 10_000 }),
       properties.getByRole("button", { name: "Export APT-CL" }).click(),
@@ -272,6 +372,22 @@ try {
     assert.match(download.suggestedFilename(), /^profile.*\.apt$/);
     return readFile(await download.path(), "utf8");
   }
+
+  const thirdStep = history.getByRole("button", { name: "Profile 3 · Main machining" });
+  const exportButton = properties.getByRole("button", { name: "Export APT-CL" });
+  await thirdStep.click({ button: "right" });
+  await menu.getByRole("menuitem", { name: "Turn off (suppress)", exact: true }).click();
+  await waitForBuilt();
+  assert.equal(await exportButton.isDisabled(), true);
+  await thirdStep.click({ button: "right" });
+  await menu.getByRole("menuitem", { name: "Turn back on", exact: true }).click();
+  await thirdStep.click({ button: "right" });
+  await menu.getByRole("menuitem", { name: "Roll back to before this", exact: true }).click();
+  await waitForBuilt();
+  assert.equal(await exportButton.isDisabled(), true);
+  await timeline.getByRole("button", { name: "Go to end", exact: true }).click();
+  await waitForBuilt();
+  assert.equal(await exportButton.isEnabled(), true);
 
   const apt = await exportProfile();
   assert.match(apt, /^FROM\/12,3,5,0,0,1$/m);
@@ -332,6 +448,10 @@ try {
   assert.equal(await toolPicker.inputValue(), toolId);
   assert.equal(await toolPicker.locator("option:checked").textContent(), "T07 — Tool");
 
+  await second.click({ button: "right" });
+  await menu.getByRole("menuitem", { name: "Turn off (suppress)", exact: true }).click();
+  await timeline.getByRole("button", { name: "Step back", exact: true }).click();
+
   await page.getByRole("button", { name: "Save CAM", exact: true }).click();
   await page.waitForFunction(() => {
     const { fileName, dirty } = window.whittle.useApp.getState();
@@ -353,7 +473,13 @@ try {
   await page.getByRole("button", { name: "Open CAM", exact: true }).click();
   await page.getByText("Opened manufacturing-regression.cam", { exact: true }).waitFor();
   await manufacturing.click();
-  assert.deepEqual(await tiles.allTextContents(), [...expected, "Profile 3 · Main machining"]);
+  assert.equal(await marker.getAttribute("aria-valuenow"), "2");
+  assert.match(await second.getAttribute("class"), /step--suppressed/);
+  assert.match(await third.getAttribute("class"), /step--rolledback/);
+  await timeline.getByRole("button", { name: "Go to end", exact: true }).click();
+  await second.click({ button: "right" });
+  await menu.getByRole("menuitem", { name: "Turn back on", exact: true }).click();
+  assert.deepEqual(await tileNames(), [...expected, "Profile 3 · Main machining"]);
   await history.getByRole("button", { name: "Profile 3 · Main machining" }).click();
   assert.equal(await contextPicker.inputValue(), contextIds[1]);
   assert.equal(await toolPicker.inputValue(), toolId);
@@ -393,7 +519,7 @@ try {
   assert.equal(new Set(savedContexts.flatMap((context) => context.bodies.map(({ body }) => body.entityId))).size, 1);
   assert.deepEqual(savedContexts.map((context) => context.bodies.map(({ role }) => role)),
     [["workpiece"], ["workpiece", "stock"], ["workpiece", "fixture"]]);
-  await setupTile.click();
+  await selectSetup("Primary machining");
   assert.equal(await properties.getByRole("button", { name: "Delete setup" }).isDisabled(), true);
   assert.equal(await contextPanel.count(), 0);
   assert.deepEqual(savedContexts.map((context) => context.frame.csysId), frames.map(({ id }) => id));
@@ -429,7 +555,7 @@ try {
   await properties.getByRole("button", { name: "Export APT-CL" }).click();
   await properties.getByRole("alert").getByText(/context coordinate system is unavailable/).waitFor();
   page.off("download", unexpectedDownload);
-  await setupTile.click();
+  await selectSetup("Primary machining");
   await platformMissingBody();
   await properties.getByRole("alert").getByText(/unavailable workpiece body/).first().waitFor();
   await command("open");
@@ -454,7 +580,9 @@ try {
   const legacySource = await page.evaluate(async (name) => Array.from(new Uint8Array(await window.camTestFiles.files.get(name).arrayBuffer())), name);
   await manufacturing.click();
   await page.getByRole("button", { name: "Migrate Embedded Manufacturing" }).click();
-  await history.getByRole("button", { name: "Migrated milling" }).waitFor();
+  await selectSetup("Migrated milling");
+  assert.equal(await setupSelector.textContent(), "Migrated milling");
+  assert.deepEqual(await tileNames(), []);
   await page.getByRole("button", { name: "Save CAM", exact: true }).click();
   await page.waitForFunction(() => !window.whittle.useApp.getState().dirty);
   assert.deepEqual(await page.evaluate(async (name) => Array.from(new Uint8Array(await window.camTestFiles.files.get(name).arrayBuffer())), name), legacySource);

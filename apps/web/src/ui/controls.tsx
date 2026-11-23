@@ -41,7 +41,7 @@ export function Popover({
   children: ReactNode;
   matchWidth?: boolean;
   className?: string;
-  placement?: "bottom-start" | "bottom-end";
+  placement?: "bottom-start" | "bottom-end" | "top-start";
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [style, setStyle] = useState<CSSProperties>({ visibility: "hidden" });
@@ -54,7 +54,8 @@ export function Popover({
       const h = el?.offsetHeight ?? 0;
       const w = Math.max(el?.offsetWidth ?? 0, matchWidth ? a.width : 0);
       const below = window.innerHeight - a.bottom - 8;
-      const top = below >= h || a.top < h ? Math.min(a.bottom + 4, window.innerHeight - h - 8) : a.top - h - 4;
+      const above = placement === "top-start" || (below < h && a.top >= h);
+      const top = above ? a.top - h - 4 : Math.min(a.bottom + 4, window.innerHeight - h - 8);
       let left = placement === "bottom-end" ? a.right - w : a.left;
       left = Math.max(8, Math.min(left, window.innerWidth - w - 8));
       setStyle({ top: Math.max(8, top), left, minWidth: matchWidth ? a.width : undefined });
@@ -126,6 +127,8 @@ export function Select<T extends string>({
   size = "md",
   ariaLabel,
   className = "",
+  placement,
+  allowReselect = false,
 }: {
   value: T | "" | undefined;
   options: Option<T>[];
@@ -135,6 +138,8 @@ export function Select<T extends string>({
   size?: "sm" | "md";
   ariaLabel?: string;
   className?: string;
+  placement?: "top-start";
+  allowReselect?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
@@ -154,7 +159,7 @@ export function Select<T extends string>({
     if (!o || o.disabled) return;
     setOpen(false);
     btn.current?.focus();
-    if (o.value !== value) onChange(o.value);
+    if (allowReselect || o.value !== value) onChange(o.value);
   };
   const move = (dir: number) => {
     if (!enabled.length) return;
@@ -225,7 +230,7 @@ export function Select<T extends string>({
         <span className={`select-btn__text ${current ? "" : "is-placeholder"}`}>{current ? (current.short ?? current.label) : placeholder}</span>
         <Icon name="chevronDown" size={12} />
       </button>
-      <Popover anchor={btn.current} open={open} onClose={() => setOpen(false)} matchWidth className="listbox">
+      <Popover anchor={btn.current} open={open} onClose={() => setOpen(false)} matchWidth className="listbox" placement={placement}>
         <div ref={list} role="listbox" id={id} aria-label={ariaLabel ?? label}>
           {options.length === 0 && <div className="listbox__empty">Nothing to choose</div>}
           {options.map((o, i) => {

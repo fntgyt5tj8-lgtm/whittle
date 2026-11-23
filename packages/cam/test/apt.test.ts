@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { CAM_WORLD, exportAptProgram, flipCamFrame, generateCircularProfile, transformCamVector, type AptOperation, type CamFrame, type CamVector } from "../src";
+import { CAM_WORLD, exportAptProgram, flipCamFrame, generateCircularProfile, generateContour, transformCamVector, type AptOperation, type CamFrame, type CamVector } from "../src";
 import { cross, dot, subtract } from "../src/geometry/frames";
 
 const side: CamFrame = { origin: [10, 20, 30], x: [1, 0, 0], y: [0, 0, -1], z: [0, 1, 0] };
@@ -78,6 +78,57 @@ describe("indexed APT program", () => {
       });
     },
   );
+
+  it("emits CUTCOM on straight outer moves for every compensated pass", () => {
+    const compensated = (cutcom: "left" | "right", number: number): AptOperation => {
+      const contour = generateContour([{ kind: "arc", c: [0, 0], r: 5, start: 0, sweep: Math.PI / 2 }],
+        CAM_WORLD, CAM_WORLD, {
+          side: cutcom, direction: "forward", depth: "2", stepdown: "1", clearance: "3",
+          normalLeadIn: "1", normalLeadOut: "1",
+        }, 2);
+      if (!contour.ok) throw new Error(contour.errors.join("\n"));
+      return {
+        name: cutcom, frame: CAM_WORLD, toolNumber: number, cutcom,
+        path: { tool: { kind: "flat-endmill", diameter: 2 }, feed: 240, plungeFeed: 60, motions: contour.value.motions },
+      };
+    };
+    const items = [compensated("left", 1), compensated("right", 2), operations[0]!];
+    const withCutcom = exported(items);
+    const lines = withCutcom.split("\n");
+    expect(lines.filter((line) => line.startsWith("CUTCOM/"))).toEqual(
+      ["LEFT", "OFF", "LEFT", "OFF", "RIGHT", "OFF", "RIGHT", "OFF"].map((mode) => `CUTCOM/${mode}`),
+    );
+    for (const [i, line] of lines.entries()) {
+      if (!line.startsWith("CUTCOM/")) continue;
+      expect(lines[i + 1]).toMatch(/^GOTO\//);
+      if (line.endsWith("/OFF")) expect(lines[i + 2]).toBe("RAPID");
+      else expect(lines[i + 2]).toMatch(/^CIRCLE\//);
+    }
+    expect(withCutcom.replace(/^CUTCOM\/.*\n/gm, "")).toBe(exported(items.map((item) => ({ ...item, cutcom: undefined }))));
+  });
+
+  it("feeds across a stay-down link with CUTCOM cancelled", () => {
+    const contour = generateContour([{ kind: "arc", c: [0, 0], r: 5, start: 0, sweep: 2 * Math.PI }],
+      CAM_WORLD, CAM_WORLD, {
+        side: "right", direction: "forward", depth: "1", clearance: "2", normalLeadIn: "1", normalLeadOut: "1",
+        optimiseRetracts: true, stockAllowance: "0.5", radialIncrement: "0.5",
+      }, 2);
+    if (!contour.ok) throw new Error(contour.errors.join("\n"));
+    const { motions, stayDownLinkCount } = contour.value;
+    expect(stayDownLinkCount).toBe(1);
+    const apt = exported([{ name: "Stay down", frame: CAM_WORLD, cutcom: "right",
+      path: { tool: { kind: "flat-endmill", diameter: 2 }, feed: 100, plungeFeed: 25, motions } }]);
+    const lines = apt.split("\n");
+    const off = lines.indexOf("CUTCOM/OFF");
+    near(lines[off + 1]!.slice(5).split(",").map(Number), [7.5, 0, -1, 0, 0, 1]);
+    near(lines[off + 2]!.slice(5).split(",").map(Number), [7, 0, -1, 0, 0, 1]);
+    expect(lines[off + 3]).toBe("CUTCOM/RIGHT");
+  });
+
+  it("requires separate linear activation and cancellation moves for CUTCOM", () => {
+    expect(exportAptProgram("No leads", [{ ...operations[0]!, cutcom: "left" }]))
+      .toMatchObject({ ok: false, errors: [expect.stringContaining("straight feed moves")] });
+  });
 
   it("subdivides major arcs analytically and helical entries into bounded feed chords", () => {
     const start = [5, 0, 0] as const;

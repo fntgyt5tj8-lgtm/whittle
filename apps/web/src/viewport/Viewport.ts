@@ -116,21 +116,43 @@ const tmpV = new THREE.Vector3();
 const GHOST_COLORS: Record<string, string> = { new: "#3d8bfd", join: "#2fbf71", cut: "#e5484d", intersect: "#f5a524" };
 const ease = (t: number) => 1 - Math.pow(1 - t, 3);
 
-/** Turntable orbit around world Z. Represents any view, including top/bottom. */
-class Turntable {
+/** The camera frame travels with the orbit through both poles. */
+class CadOrbit {
   target = new THREE.Vector3();
   distance = 300;
-  theta = -Math.PI / 4; // azimuth around Z
-  phi = Math.PI / 3; // polar angle from +Z
+  readonly orientation = new THREE.Quaternion();
+  private readonly axis = new THREE.Vector3();
+  private readonly rotation = new THREE.Quaternion();
+
+  constructor() {
+    this.setAngles(-Math.PI / 4, Math.PI / 3);
+  }
+
+  /** Reconstruct the upright frame used by older saved views. */
+  setAngles(theta: number, phi: number) {
+    const ct = Math.cos(theta);
+    const st = Math.sin(theta);
+    const sp = Math.sin(phi);
+    const cp = Math.cos(phi);
+    this.setDirection(new THREE.Vector3(sp * ct, sp * st, cp), new THREE.Vector3(-cp * ct, -cp * st, sp));
+  }
+
+  setDirection(back: THREE.Vector3, up = new THREE.Vector3(0, 0, 1)) {
+    this.orientation.setFromRotationMatrix(new THREE.Matrix4().lookAt(back, new THREE.Vector3(), up));
+  }
+
+  rotate(dx: number, dy: number) {
+    // Orbit about an axis in the camera's image plane, with no twist around the view direction.
+    this.axis.set(-dy, -dx, 0).normalize();
+    this.rotation.setFromAxisAngle(this.axis, Math.hypot(dx, dy) * 0.0075);
+    this.orientation.multiply(this.rotation).normalize();
+  }
 
   apply(camera: THREE.PerspectiveCamera, ortho?: THREE.OrthographicCamera) {
-    const sp = Math.sin(this.phi);
-    const cp = Math.cos(this.phi);
-    const ct = Math.cos(this.theta);
-    const st = Math.sin(this.theta);
-    camera.position.set(this.target.x + this.distance * sp * ct, this.target.y + this.distance * sp * st, this.target.z + this.distance * cp);
-    camera.up.set(-cp * ct, -cp * st, sp);
-    camera.lookAt(this.target);
+    camera.quaternion.copy(this.orientation);
+    camera.position.set(0, 0, this.distance).applyQuaternion(this.orientation).add(this.target);
+    camera.up.set(0, 1, 0).applyQuaternion(this.orientation);
+    camera.updateMatrixWorld();
     camera.near = Math.max(0.01, this.distance / 2000);
     camera.far = this.distance * 200;
     camera.updateProjectionMatrix();
@@ -144,25 +166,21 @@ class Turntable {
       ortho.bottom = -h;
       ortho.position.copy(camera.position);
       ortho.up.copy(camera.up);
-      ortho.lookAt(this.target);
+      ortho.quaternion.copy(camera.quaternion);
+      ortho.updateMatrixWorld();
       ortho.near = -this.distance * 50;
       ortho.far = this.distance * 200;
       ortho.updateProjectionMatrix();
     }
   }
 
-  /** View direction (from target to camera) to theta/phi; `up` disambiguates top/bottom views. */
-  static anglesFor(dir: THREE.Vector3, up?: THREE.Vector3): { theta: number; phi: number } {
-    const d = dir.clone().normalize();
-    const phi = Math.acos(THREE.MathUtils.clamp(d.z, -1, 1));
-    let theta: number;
-    if (Math.abs(Math.sin(phi)) < 1e-4) {
-      // Looking straight along Z: choose theta so that the camera "up" matches.
-      const u = up ?? new THREE.Vector3(0, 1, 0);
-      const cp = Math.cos(phi);
-      theta = Math.atan2(-u.y / cp, -u.x / cp);
-    } else theta = Math.atan2(d.y, d.x);
-    return { theta, phi };
+  /** Legacy angles for saved views and consumers that only need the view direction. */
+  getAngles() {
+    const back = new THREE.Vector3(0, 0, 1).applyQuaternion(this.orientation);
+    const lateral = Math.hypot(back.x, back.y);
+    const up = new THREE.Vector3(0, 1, 0).applyQuaternion(this.orientation);
+    const theta = lateral > 1e-10 ? Math.atan2(back.y, back.x) : Math.atan2(-up.y * back.z, -up.x * back.z);
+    return { theta, phi: Math.atan2(lateral, back.z) };
   }
 }
 
@@ -178,7 +196,7 @@ export class Viewport {
   private shadow: THREE.Mesh;
   private clip = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
   private scene = new THREE.Scene();
-  private orbit = new Turntable();
+  private orbit = new CadOrbit();
   private theme: ViewportTheme = VIEWPORT_THEMES.graphite;
   private bodies = new Map<Id, BodyView>();
   private pickBodies: BodyView[] = [];
@@ -192,6 +210,21 @@ export class Viewport {
   private camToolGroup = new THREE.Group();
   private camTipOrigin = new THREE.Vector3();
   private camPath?: CamContourPlayback["path"];
+  private camHandleGroup = new THREE.Group();
+  private camHandles: {
+    handle: NonNullable<CamContourPlayback["path"]["contourHandles"]>[number];
+    marker: THREE.Points;
+  }[] = [];
+  private camEdit?: CamContourPlayback["editContour"];
+  private camDrag?: {
+    pointer: number;
+    target: Viewport["camHandles"][number];
+    start: THREE.Vector3;
+    screen: Vec2;
+    plane: THREE.Plane;
+    trace: THREE.Line<THREE.BufferGeometry, THREE.LineBasicMaterial>;
+    value?: number;
+  };
   private highlightGroup = new THREE.Group();
   private grid = new THREE.Group();
   /** World Z, drawn with the grid while modelling (in a sketch the grid's own axes take over). */
@@ -216,7 +249,7 @@ export class Viewport {
   private sketchHit: { id: Id; pts: { pts: Vec3[]; closed: boolean }[] }[] = [];
   /** Pickable sketch areas (profiles). */
   private regionMeshes: THREE.Mesh[] = [];
-  private anim: { from: Turntable; to: Turntable; t0: number; dur: number } | null = null;
+  private anim: { from: CadOrbit; to: CadOrbit; t0: number; dur: number } | null = null;
   private drag: { x: number; y: number; button: number; moved: boolean; mode: "orbit" | "pan" | "zoom" | "none" } | null = null;
   private nav: NavPreset = "whittle";
   private invertZoom = false;
@@ -258,7 +291,7 @@ export class Viewport {
     this.scene.environmentRotation.set(Math.PI / 2, 0, 0);
 
     this.persp.up.set(0, 0, 1);
-    this.scene.add(this.shadow, this.imageGroup, this.world, this.fillGroup, this.sketchGroup, this.previewGroup, this.camPathGroup, this.camToolGroup, this.overlay, this.highlightGroup, this.measureGroup, this.flagGroup, this.grid, this.axisZ, this.planes, this.cplanes, this.hemi, this.persp, this.orthoCam);
+    this.scene.add(this.shadow, this.imageGroup, this.world, this.fillGroup, this.sketchGroup, this.previewGroup, this.camPathGroup, this.camToolGroup, this.camHandleGroup, this.overlay, this.highlightGroup, this.measureGroup, this.flagGroup, this.grid, this.axisZ, this.planes, this.cplanes, this.hemi, this.persp, this.orthoCam);
     // Each light rides with its camera and aims at the camera itself, so its offset is a direction in view space.
     // (A light's target is the world origin unless it's parented too, which makes every light a plain headlight.)
     const rig = (cam: THREE.Camera, key: THREE.DirectionalLight, fill: THREE.DirectionalLight) => {
@@ -280,6 +313,9 @@ export class Viewport {
     el.addEventListener("pointermove", this.onPointerMove);
     el.addEventListener("pointerup", this.onPointerUp);
     el.addEventListener("pointercancel", this.onPointerCancel);
+    el.addEventListener("lostpointercapture", (e) => {
+      if (e.pointerId === this.camDrag?.pointer) this.finishCamDrag(false);
+    });
     el.style.touchAction = "none"; // fingers navigate the model; the page never scrolls or zooms under them
     el.addEventListener("pointerleave", this.onPointerLeave);
     el.addEventListener("wheel", this.onWheel, { passive: false });
@@ -294,15 +330,20 @@ export class Viewport {
 
   /** The camera as plain numbers: what a named view stores. */
   getCamera(): CameraState {
-    return { target: this.orbit.target.toArray() as [number, number, number], distance: this.orbit.distance, theta: this.orbit.theta, phi: this.orbit.phi };
+    return {
+      target: this.orbit.target.toArray() as [number, number, number],
+      distance: this.orbit.distance,
+      ...this.orbit.getAngles(),
+      orientation: this.orbit.orientation.toArray(),
+    };
   }
 
   setCamera(c: CameraState) {
-    const to = new Turntable();
+    const to = new CadOrbit();
     to.target.fromArray(c.target);
     to.distance = c.distance;
-    to.theta = c.theta;
-    to.phi = c.phi;
+    if (c.orientation) to.orientation.fromArray(c.orientation).normalize();
+    else to.setAngles(c.theta, c.phi);
     this.animateTo(to);
   }
 
@@ -335,8 +376,7 @@ export class Viewport {
       const { from, to } = this.anim;
       this.orbit.target.lerpVectors(from.target, to.target, k);
       this.orbit.distance = from.distance + (to.distance - from.distance) * k;
-      this.orbit.theta = from.theta + (to.theta - from.theta) * k;
-      this.orbit.phi = from.phi + (to.phi - from.phi) * k;
+      this.orbit.orientation.slerpQuaternions(from.orientation, to.orientation, k);
       if (t >= 1) this.anim = null;
       this.applyOrbit();
       this.cb.onCamera();
@@ -907,6 +947,10 @@ export class Viewport {
 
   setCamContour(playback: CamContourPlayback | null, bodies: BodyResult[], meta: Record<Id, BodyMeta>) {
     const pathChanged = this.camPath !== playback?.path;
+    this.finishCamDrag(false);
+    this.clearGroup(this.camHandleGroup);
+    this.camHandles = [];
+    this.camEdit = playback?.editContour;
     this.camPath = playback?.path;
     this.clearGroup(this.camPathGroup);
     this.clearGroup(this.camToolGroup);
@@ -915,6 +959,19 @@ export class Viewport {
       return;
     }
     const { path, tip } = playback;
+    if (this.camEdit) {
+      for (const handle of path.contourHandles ?? []) {
+        const color = handle.key === "leadIn" ? "#70ebaf" : handle.key === "leadOut" ? "#ffb859" : "#78dfff";
+        const geometry = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3()]);
+        const marker = new THREE.Points(geometry, new THREE.PointsMaterial({
+          color, size: 12, sizeAttenuation: false, depthTest: false, depthWrite: false,
+        }));
+        marker.position.set(...handle.position);
+        marker.renderOrder = 31;
+        this.camHandleGroup.add(marker);
+        this.camHandles.push({ handle, marker });
+      }
+    }
     const addPath = (paths: readonly (typeof path.centerline)[], color: string, width: number, order: number) => {
       const segmentPositions = paths.flatMap((points) => points.slice(1).flatMap((point, i) => [...points[i]!, ...point]));
       const geometry = new LineSegmentsGeometry();
@@ -949,7 +1006,7 @@ export class Viewport {
     this.camToolGroup.quaternion.setFromRotationMatrix(rotation);
     this.camTipOrigin.set(...tip.origin).applyMatrix4(rotation);
     this.setCamContourProgress(0);
-    if (pathChanged) this.viewTo("fit");
+    if (pathChanged && !playback.preserveCamera) this.viewTo("fit");
   }
 
   setCamContourProgress(progress: number) {
@@ -1855,9 +1912,76 @@ export class Viewport {
     this.pinch = this.pinchState();
   }
 
+  private beginCamDrag(e: PointerEvent) {
+    const screen = this.screen(e);
+    let target: Viewport["camHandles"][number] | undefined;
+    let best = 12;
+    for (const candidate of this.camHandles) {
+      const projected = candidate.marker.position.clone().project(this.camera);
+      if (Math.abs(projected.z) > 1) continue;
+      const [x, y] = this.projectedToScreen(projected);
+      const error = Math.hypot(x - screen[0], y - screen[1]);
+      if (error >= best) continue;
+      target = candidate;
+      best = error;
+    }
+    if (!target) return false;
+    const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(
+      new THREE.Vector3(...target.handle.normal), target.marker.position,
+    );
+    this.raycaster.setFromCamera(this.ndc(e), this.camera);
+    const start = this.raycaster.ray.intersectPlane(plane, new THREE.Vector3());
+    if (!start) return false;
+    const trace = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]),
+      new THREE.LineBasicMaterial({ color: 0xffffff, depthTest: false, depthWrite: false }));
+    trace.frustumCulled = false;
+    trace.renderOrder = 30;
+    trace.visible = false;
+    this.camHandleGroup.add(trace);
+    this.anim = null;
+    this.camDrag = { pointer: e.pointerId, target, start, screen, plane, trace };
+    return true;
+  }
+
+  private updateCamDrag(e: PointerEvent) {
+    const drag = this.camDrag;
+    if (!drag || drag.pointer !== e.pointerId) return;
+    const [x, y] = this.screen(e);
+    if (drag.value === undefined && Math.hypot(x - drag.screen[0], y - drag.screen[1]) < 2) return;
+    this.raycaster.setFromCamera(this.ndc(e), this.camera);
+    const hit = this.raycaster.ray.intersectPlane(drag.plane, new THREE.Vector3());
+    if (!hit) return;
+    const { handle, marker } = drag.target;
+    hit.sub(drag.start).add(new THREE.Vector3(...handle.position));
+    const candidate = handle.project([hit.x, hit.y, hit.z]);
+    if (!Number.isFinite(candidate.value)) return;
+    drag.value = candidate.value;
+    marker.position.set(...candidate.position);
+    const positions = drag.trace.geometry.getAttribute("position")!;
+    positions.setXYZ(0, ...candidate.traceFrom);
+    positions.setXYZ(1, ...candidate.position);
+    positions.needsUpdate = true;
+    drag.trace.visible = true;
+    this.invalidate();
+  }
+
+  private finishCamDrag(commit: boolean) {
+    const drag = this.camDrag;
+    if (!drag) return;
+    this.camDrag = undefined;
+    drag.target.marker.position.set(...drag.target.handle.position);
+    this.camHandleGroup.remove(drag.trace);
+    this.disposeObject(drag.trace);
+    const canvas = this.renderer.domElement;
+    if (canvas.hasPointerCapture(drag.pointer)) canvas.releasePointerCapture(drag.pointer);
+    if (commit && drag.value !== undefined) this.camEdit?.(drag.target.handle.key, drag.value);
+    this.invalidate();
+  }
+
   private onPointerDown = (e: PointerEvent) => {
     this.renderer.domElement.setPointerCapture(e.pointerId);
     this.renderer.domElement.focus({ preventScroll: true });
+    if (this.camDrag || (!this.drag && e.button === 0 && this.beginCamDrag(e))) return;
     if (e.pointerType === "touch") {
       this.touches.set(e.pointerId, [e.clientX, e.clientY]);
       if (this.touches.size === 2) {
@@ -1895,6 +2019,10 @@ export class Viewport {
   };
 
   private onPointerMove = (e: PointerEvent) => {
+    if (this.camDrag) {
+      this.updateCamDrag(e);
+      return;
+    }
     if (e.pointerType === "touch" && this.touches.has(e.pointerId)) {
       this.touches.set(e.pointerId, [e.clientX, e.clientY]);
       if (this.pinch && this.touches.size >= 2) {
@@ -1924,8 +2052,7 @@ export class Viewport {
         d.x = e.clientX;
         d.y = e.clientY;
         if (d.mode === "orbit") {
-          this.orbit.theta -= dx * 0.0075;
-          this.orbit.phi = THREE.MathUtils.clamp(this.orbit.phi - dy * 0.0075, 0.0001, Math.PI - 0.0001);
+          this.orbit.rotate(dx, dy);
         } else if (d.mode === "zoom") {
           const k = Math.pow(1.006, (this.invertZoom ? -dy : dy));
           this.orbit.distance = THREE.MathUtils.clamp(this.orbit.distance * k, 0.5, 200000);
@@ -1971,6 +2098,10 @@ export class Viewport {
   }
 
   private onPointerCancel = (e: PointerEvent) => {
+    if (this.camDrag) {
+      if (e.pointerId === this.camDrag.pointer) this.finishCamDrag(false);
+      return;
+    }
     this.cancelLongPress();
     this.endLongPress();
     this.touches.delete(e.pointerId);
@@ -1981,6 +2112,13 @@ export class Viewport {
   };
 
   private onPointerUp = (e: PointerEvent) => {
+    if (this.camDrag) {
+      if (e.pointerId === this.camDrag.pointer) {
+        this.updateCamDrag(e);
+        this.finishCamDrag(true);
+      }
+      return;
+    }
     this.cancelLongPress();
     this.endLongPress();
     const d = this.drag;
@@ -2040,14 +2178,11 @@ export class Viewport {
 
   /* ───────────────────────── Camera views ───────────────────────── */
 
-  private animateTo(to: Turntable, dur = 420) {
-    const from = new Turntable();
+  private animateTo(to: CadOrbit, dur = 420) {
+    const from = new CadOrbit();
     from.target.copy(this.orbit.target);
     from.distance = this.orbit.distance;
-    from.theta = this.orbit.theta;
-    from.phi = this.orbit.phi;
-    const dt = to.theta - from.theta;
-    to.theta = from.theta + Math.atan2(Math.sin(dt), Math.cos(dt)); // shortest way round
+    from.orientation.copy(this.orbit.orientation);
     // The system setting, or Settings > Reduce motion (which promises instant camera moves).
     const still = matchMedia("(prefers-reduced-motion: reduce)").matches || document.documentElement.dataset.motion === "reduced";
     this.anim = { from, to, t0: performance.now(), dur: still ? 1 : dur };
@@ -2081,7 +2216,7 @@ export class Viewport {
 
   viewTo(view: CubeView | "home" | "fit") {
     const sphere = this.frameBox().getBoundingSphere(new THREE.Sphere());
-    const to = new Turntable();
+    const to = new CadOrbit();
     to.target.copy(sphere.center);
     to.distance = this.fitDistance(sphere.radius);
     const dirs: Record<CubeView, [THREE.Vector3, THREE.Vector3?]> = {
@@ -2094,13 +2229,10 @@ export class Viewport {
       iso: [new THREE.Vector3(1, -1.25, 0.95)],
     };
     if (view === "fit") {
-      to.theta = this.orbit.theta;
-      to.phi = this.orbit.phi;
+      to.orientation.copy(this.orbit.orientation);
     } else {
       const [dir, up] = dirs[view === "home" ? "iso" : view];
-      const a = Turntable.anglesFor(dir, up);
-      to.theta = a.theta;
-      to.phi = THREE.MathUtils.clamp(a.phi, 0.0001, Math.PI - 0.0001);
+      to.setDirection(dir, up);
     }
     this.animateTo(to);
   }
@@ -2108,14 +2240,12 @@ export class Viewport {
   /** Look along any direction from the model's center (the orientation cube's edges and corners). */
   viewDirection(dir: [number, number, number]) {
     const sphere = this.frameBox().getBoundingSphere(new THREE.Sphere());
-    const to = new Turntable();
+    const to = new CadOrbit();
     to.target.copy(sphere.center);
     to.distance = this.fitDistance(sphere.radius);
     const d = new THREE.Vector3(...dir);
-    // Straight down or up has no "up" of its own: keep +Y up the screen, as the cube's Top face does.
-    const a = Turntable.anglesFor(d, Math.abs(d.clone().normalize().z) > 0.999 ? new THREE.Vector3(0, Math.sign(d.z), 0) : undefined);
-    to.theta = a.theta;
-    to.phi = THREE.MathUtils.clamp(a.phi, 0.0001, Math.PI - 0.0001);
+    // Match the cube's Top and Bottom faces when the direction is exactly vertical.
+    to.setDirection(d, d.x === 0 && d.y === 0 ? new THREE.Vector3(0, Math.sign(d.z), 0) : undefined);
     this.animateTo(to);
   }
 
@@ -2131,8 +2261,8 @@ export class Viewport {
 
   /** Turn the camera around the target by screen pixels (dragging the orientation cube). */
   orbitBy(dx: number, dy: number) {
-    this.orbit.theta -= dx * 0.0075;
-    this.orbit.phi = THREE.MathUtils.clamp(this.orbit.phi - dy * 0.0075, 0.0001, Math.PI - 0.0001);
+    this.anim = null;
+    this.orbit.rotate(dx, dy);
     this.applyOrbit();
     this.cb.onCamera();
     this.invalidate();
@@ -2140,7 +2270,7 @@ export class Viewport {
 
   /** Look straight at a sketch plane. */
   viewNormal(frame: SketchFrame, fit?: { radius: number; center: Vec3 }) {
-    const to = new Turntable();
+    const to = new CadOrbit();
     const sphere = fit ? new THREE.Sphere(new THREE.Vector3(...fit.center), fit.radius) : this.frameBox().getBoundingSphere(new THREE.Sphere());
     const r = fit ? Math.max(4, fit.radius) : Math.max(60, sphere.radius);
     // Center on the model where it meets the plane, not the plane's origin: a part drawn up from the origin stays in view.
@@ -2149,9 +2279,7 @@ export class Viewport {
     if ([...this.bodies.values()].some((v) => v.visible)) to.target.copy(sphere.center).addScaledVector(n, -sphere.center.clone().sub(o).dot(n));
     else to.target.copy(o);
     to.distance = this.fitDistance(r, 1.08); // sketches keep their tighter framing
-    const a = Turntable.anglesFor(new THREE.Vector3(...frame.normal), new THREE.Vector3(...frame.yDir));
-    to.theta = a.theta;
-    to.phi = THREE.MathUtils.clamp(a.phi, 0.0001, Math.PI - 0.0001);
+    to.setDirection(n, n.x === 0 && n.y === 0 ? new THREE.Vector3(...frame.yDir) : undefined);
     this.animateTo(to);
   }
 

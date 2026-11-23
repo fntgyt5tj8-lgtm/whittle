@@ -25,7 +25,7 @@ export function validateToolpath(path: CamToolpath): string[] {
     if (previous && distance(previous.end, motion.start) > CAM_LENGTH_TOLERANCE) {
       errors.push(`${label} is disconnected.`);
     }
-    if (motion.kind === "line" && !["rapid", "feed", "plunge"].includes(motion.mode)) {
+    if (motion.kind === "line" && !["rapid", "feed", "plunge", "link"].includes(motion.mode)) {
       errors.push(`${label} has an invalid line mode.`);
     }
     if (motion.kind === "arc") {

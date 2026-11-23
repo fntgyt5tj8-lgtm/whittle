@@ -1,11 +1,12 @@
-import { Fragment, useEffect, useState } from "react";
-import type { CamBoundaryEdge, CamFrame, CamProcess, CamToolPosition, ContourMillingSettings, FacingMillingSettings, PocketMillingSettings } from "@whittle/cam";
+import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { contourTravel, type CamBoundaryEdge, type CamFrame, type CamProcess, type CamToolPosition, type ContourMillingSettings, type FacingMillingSettings, type PocketMillingSettings } from "@whittle/cam";
 import { type CamContourPlayback, useApp } from "../../state/store";
 import { generateMilling, millingGeometry } from "../milling";
 import type { CamCadAdapter } from "../cadAdapter";
 
 interface Props {
   cad: CamCadAdapter;
+  operationActive: boolean;
   process: CamProcess;
   settings: ContourMillingSettings | PocketMillingSettings | FacingMillingSettings;
   tool?: CamToolPosition;
@@ -15,20 +16,27 @@ interface Props {
   onChange(settings: Partial<ContourMillingSettings & PocketMillingSettings & FacingMillingSettings>): void;
 }
 
-export function ContourMilling({ cad, process, settings, tool, resolveFrame, validateReferences, onChange, onGeometryChange }: Props) {
+export function ContourMilling({ cad, process, settings, operationActive, tool, resolveFrame, validateReferences, onChange, onGeometryChange }: Props) {
   const adaptive = process.kind === "adaptive";
   const facing = "strategy" in settings;
   const label = facing ? "Facing milling" : adaptive ? "Adaptive clearing" : "stepover" in settings ? "Pocket milling" : "Contour milling";
   const doc = useApp((s) => s.doc);
   const [attempt, setAttempt] = useState<{ doc: typeof doc; errors: readonly string[] }>();
   const playback = useApp((s) => s.camContourPlayback?.doc === s.doc ? s.camContourPlayback : null);
+  const editRef = useRef<NonNullable<CamContourPlayback["editContour"]>>(() => {});
+  useLayoutEffect(() => () => {
+    useApp.setState({ camContourPlayback: null, camContourProgress: 0 });
+  }, []);
   const [progress, setProgress] = useState(0);
   const [playing, setPlaying] = useState(false);
 
   useEffect(() => {
     setPlaying(false);
     setProgress(0);
-    return () => useApp.setState({ camContourPlayback: null, camContourProgress: 0 });
+    const state = useApp.getState();
+    if (state.camContourPlayback && state.camContourPlayback.doc !== doc) {
+      useApp.setState({ camContourPlayback: null, camContourProgress: 0 });
+    }
   }, [doc]);
 
   function seek(value: number) {
@@ -62,19 +70,37 @@ export function ContourMilling({ cad, process, settings, tool, resolveFrame, val
     }
     onGeometryChange(facing ? { boundaryEdges: edges, facingFace: undefined, contour: undefined } : { [kind]: edges });
   }
-  function generate() {
-    setPlaying(false);
-    seek(0);
-    const generated = generateMilling(cad, doc.id, process, settings, tool, resolveFrame(), validateReferences());
-    if (!generated.ok) {
-      useApp.setState({ camContourPlayback: null });
-      setAttempt({ doc, errors: generated.errors });
+  function generate(changes?: Partial<ContourMillingSettings>, drag = false) {
+    if (useApp.getState().doc !== doc) return;
+    if (!operationActive) {
+      if (changes) onChange(changes);
       return;
     }
+    setPlaying(false);
+    seek(0);
+    const effective = changes ? { ...settings, ...changes } : settings;
+    const generated = generateMilling(cad, doc.id, process, effective, tool, resolveFrame(), validateReferences());
+    if (!generated.ok) {
+      if (changes && !drag) onChange(changes);
+      if (!drag) useApp.setState({ camContourPlayback: null });
+      setAttempt({ doc: useApp.getState().doc, errors: generated.errors });
+      return;
+    }
+    if (changes) onChange(changes);
     setAttempt(undefined);
-    const preview: CamContourPlayback = { doc, ...generated.value, showTool: true };
+    const preview: CamContourPlayback = {
+      doc: useApp.getState().doc, ...generated.value,
+      showTool: playback?.showTool ?? true, showCenterline: playback?.showCenterline,
+      preserveCamera: !!changes,
+      editContour: (key, value) => editRef.current(key, value),
+    };
     useApp.setState({ camContourPlayback: preview });
   }
+
+  editRef.current = (key, value) => generate({ [key]: String(value) }, true);
+  const isContour = !("stepover" in settings);
+  const millingDirection = isContour ? settings.millingDirection ?? "manual" : "manual";
+  const automaticTravel = isContour && settings.side !== "center" && millingDirection !== "manual";
 
   return <section aria-label={label} className="cam-contour">
     <div className="cam-properties__actions">
@@ -106,16 +132,46 @@ export function ContourMilling({ cad, process, settings, tool, resolveFrame, val
         <dd><input id="cam-pocket-stepover" type="number" min={adaptive ? 1 : 0} max={facing ? 100 : 50} step="any" value={settings.stepover}
           onChange={(event) => onChange({ stepover: event.target.value })} /></dd>
       </> : <>
+      <dt><label htmlFor="cam-contour-milling-direction">Milling direction</label></dt>
+      <dd><select id="cam-contour-milling-direction" value={millingDirection}
+        onChange={(event) => onChange({ millingDirection: event.target.value as ContourMillingSettings["millingDirection"] })}>
+        <option value="climb">Climb</option>
+        <option value="conventional">Conventional</option>
+        <option value="manual">Manual travel</option>
+      </select></dd>
+      {automaticTravel && <>
+        <dt><label htmlFor="cam-contour-spindle-direction">Spindle rotation (viewed toward the work)</label></dt>
+        <dd><select id="cam-contour-spindle-direction" value={settings.spindleDirection ?? "cw"}
+          onChange={(event) => onChange({ spindleDirection: event.target.value === "ccw" ? "ccw" : "cw" })}>
+          <option value="cw">Clockwise</option>
+          <option value="ccw">Counterclockwise</option>
+        </select></dd>
+      </>}
+      {!automaticTravel && <>
       <dt><label htmlFor="cam-contour-direction">Travel direction</label></dt>
       <dd><select id="cam-contour-direction" value={settings.direction}
         onChange={(event) => onChange({ direction: event.target.value as ContourMillingSettings["direction"] })}>
         <option value="forward">Forward</option><option value="reverse">Reverse</option>
       </select></dd>
+      </>}
       <dt><label htmlFor="cam-contour-side">Machining side</label></dt>
       <dd><select id="cam-contour-side" value={settings.side}
         onChange={(event) => onChange({ side: event.target.value as ContourMillingSettings["side"] })}>
-        <option value="center">Center</option><option value="left">Left of travel</option><option value="right">Right of travel</option>
+        <option value="center">Center</option>
+        <option value="left">{automaticTravel ? "Left of reference travel" : "Left of travel"}</option>
+        <option value="right">{automaticTravel ? "Right of reference travel" : "Right of travel"}</option>
       </select></dd>
+      {automaticTravel && <>
+        <dt>Effective compensation</dt>
+        <dd>{contourTravel(settings).side === "left" ? "Left of cutting travel" : "Right of cutting travel"}</dd>
+      </>}
+      <dt><label htmlFor="cam-contour-optimise-retracts">Optimise retracts</label></dt>
+      <dd><input id="cam-contour-optimise-retracts" type="checkbox" checked={settings.optimiseRetracts ?? false}
+        onChange={(event) => onChange({ optimiseRetracts: event.target.checked })} /></dd>
+      <dt><label htmlFor="cam-contour-cutcom">Export CUTCOM (machine R=0)</label></dt>
+      <dd><input id="cam-contour-cutcom" type="checkbox" disabled={settings.side === "center"}
+        checked={settings.side !== "center" && (settings.aptCutcom ?? false)}
+        onChange={(event) => onChange({ aptCutcom: event.target.checked })} /></dd>
       </>}
       {adaptive && !facing && "stepover" in settings && <>
         <dt><label htmlFor="cam-adaptive-entry">Entry</label></dt>
@@ -145,33 +201,73 @@ export function ContourMilling({ cad, process, settings, tool, resolveFrame, val
       {([
         ["stepdown", "Maximum stepdown (mm)", settings.stepdown],
         ...("stepover" in settings ? [] : [
+          ["stockAllowance", "Starting radial stock allowance (mm)", settings.stockAllowance],
+          ["radialIncrement", "Radial pass increment (mm)", settings.radialIncrement],
+          ["finishAllowance", "Finish radial stock allowance (mm)", settings.finishAllowance],
           ["leadIn", "Tangent lead-in (mm)", settings.leadIn],
+          ["arcLeadIn", "Tangent arc lead-in (°)", settings.arcLeadIn],
+          ["arcLeadInRadius", "Lead-in arc radius (mm)", settings.arcLeadInRadius],
+          ["normalLeadIn", "Normal lead-in (mm)", settings.normalLeadIn],
           ["leadOut", "Tangent lead-out (mm)", settings.leadOut],
+          ["arcLeadOut", "Tangent arc lead-out (°)", settings.arcLeadOut],
+          ["arcLeadOutRadius", "Lead-out arc radius (mm)", settings.arcLeadOutRadius],
+          ["normalLeadOut", "Normal lead-out (mm)", settings.normalLeadOut],
         ] as const),
       ] as const).map(([key, label, value]) => <Fragment key={key}>
         <dt><label htmlFor={`cam-contour-${key}`}>{label}</label></dt>
         <dd><input id={`cam-contour-${key}`} type="number" min="0" step="any"
-          placeholder={key === "stepdown" ? "Single pass" : "0"} value={value ?? ""}
-          onChange={(event) => onChange({ [key]: event.target.value })} /></dd>
+          max={key === "arcLeadIn" || key === "arcLeadOut" ? 180 : undefined}
+          disabled={key === "finishAllowance" && isContour && !(Number(settings.radialIncrement) > 0)}
+          placeholder={key === "stepdown" ? "Single pass" : key.endsWith("Radius") ? "Cutter radius" : "0"} value={value ?? ""}
+          onChange={(event) => {
+            if (key === "stepdown") onChange({ stepdown: event.target.value });
+            else {
+              const change = { [key]: event.target.value };
+              if (playback || attempt?.doc === doc) generate(change);
+              else onChange(change);
+            }
+          }} /></dd>
       </Fragment>)}
+      {isContour && <Fragment>
+        <dt><label htmlFor="cam-contour-seam">Closed contour seam (0–1)</label></dt>
+        <dd><input id="cam-contour-seam" type="number" min="0" max="1" step="any"
+          value={settings.seam ?? "0"} onChange={(event) => {
+            const change = { seam: event.target.value };
+            if (playback || attempt?.doc === doc) generate(change);
+            else onChange(change);
+          }} /></dd>
+      </Fragment>}
     </dl>
     <p>{facing ? "Top and final heights are relative to the boundary plane. Clearance is above both the top and boundary plane."
       : "Depth below the boundary plane. Clearance above it."}</p>
+    {isContour && settings.side === "center" && millingDirection !== "manual" && <p>Select a machining side to set climb or conventional travel.</p>}
+    {isContour && <p>Set a radial increment to cut from the starting allowance down to the finish allowance at each depth.</p>}
+    {isContour && <p>From the contour outward, the tangent line comes first, followed by the tangent arc and normal line. Zero turns a move off.</p>}
     {facing && <p>Facing sweeps the full bounding rectangle, including outside the selected surface. Use one closed loop with room for cutter overtravel.</p>}
     {!facing && "stepover" in settings && <p>Nested loops and added island sketches define areas to leave uncut.</p>}
     <div className="cam-properties__actions">
-      <button type="button" onClick={generate}>Generate toolpath</button>
+      <button type="button" disabled={!operationActive} onClick={() => generate()}>Generate toolpath</button>
       <button type="button" disabled={!playback} onClick={() => {
         if (!playing && progress >= 1) seek(0);
         setPlaying(!playing);
       }}>{playing ? "Pause" : "Play"}</button>
       <button type="button" disabled={!playback} onClick={() => { setPlaying(false); seek(0); }}>Reset</button>
+      {isContour && <button type="button" onClick={() => generate({
+        leadIn: "0", arcLeadIn: "0", arcLeadInRadius: "", normalLeadIn: "0",
+        leadOut: "0", arcLeadOut: "0", arcLeadOutRadius: "", normalLeadOut: "0", seam: "0",
+      })}>
+        Reset entry and exit
+      </button>}
     </div>
     {attempt?.doc === doc && <ul role="alert">{attempt.errors.map((error) => <li key={error}>{error}</li>)}</ul>}
     {playback && <>
+      {playback.path.contourHandles?.some(({ key }) => key === "seam") && <p>Drag the blue seam handle to move the start and end along the tool centerline.</p>}
+      {playback.path.contourHandles?.some(({ key }) => key !== "seam") && <p>Drag the available green entry or orange exit handles along their endpoint tangents.</p>}
       {playback.path.stayDownLinkCount !== undefined && <p role="status">
         {playback.path.stayDownLinkCount > 0
-          ? `${playback.path.stayDownLinkCount} stay-down links (${playback.path.stayDownCutLinkCount ?? 0} short cutting links, ${playback.path.routedStayDownLinkCount ?? 0} routed).`
+          ? isContour
+            ? `${playback.path.stayDownLinkCount} same-depth feed links.`
+            : `${playback.path.stayDownLinkCount} stay-down links (${playback.path.stayDownCutLinkCount ?? 0} short cutting links, ${playback.path.routedStayDownLinkCount ?? 0} routed).`
           : "All links use clearance."}
       </p>}
       {!!playback.path.adaptiveTransitionCuts && <p role="status">

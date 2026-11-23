@@ -219,6 +219,7 @@ try {
   const generate = contour.getByRole("button", { name: "Generate toolpath", exact: true });
   const side = contour.getByLabel("Machining side");
   const direction = contour.getByLabel("Travel direction");
+  const millingDirection = contour.getByLabel("Milling direction");
   const waitForCamBuild = () => page.waitForFunction(() => {
     const { builtDoc, doc } = window.whittle.useApp.getState();
     return builtDoc === doc;
@@ -244,6 +245,7 @@ try {
     [...expected.point, ...expected.axis].forEach((value, i) => assert.ok(Math.abs(from[i] - value) < 1e-8));
     assert.equal(/^CIRCLE\//m.test(apt), hasArcs);
     assert.match(apt, /^FINI$/m);
+    return apt;
   }
 
   await generate.click();
@@ -251,10 +253,48 @@ try {
   await properties.getByLabel("Tool position", { exact: true }).selectOption(tool.id);
   await contour.getByLabel("Depth (mm)").fill("1.25");
   await checkApt(contour, true);
+  // Drag the seam through a quarter turn. The live marker moves before the operation is saved.
+  await page.evaluate(() => window.whittle.viewportRef.current.viewTo("top"));
+  await page.waitForFunction(() => {
+    const vp = window.whittle.viewportRef.current;
+    return !vp.anim && vp.camHandles.length === 1;
+  });
+  const seamDrag = await page.evaluate(() => {
+    const { viewportRef, useApp } = window.whittle;
+    const vp = viewportRef.current;
+    const { centerline, contourHandles } = useApp.getState().camContourPlayback.path;
+    const marker = contourHandles[0];
+    const target = centerline[Math.round((centerline.length - 1) / 4)];
+    const canvas = vp.renderer.domElement.getBoundingClientRect();
+    const toClient = (point) => {
+      const [x, y] = vp.worldToScreen(point);
+      return [canvas.left + x * canvas.width / vp.size.x, canvas.top + y * canvas.height / vp.size.y];
+    };
+    return [toClient(marker.position), toClient(target)];
+  });
+  const seamField = contour.getByLabel("Closed contour seam (0–1)");
+  await page.mouse.move(...seamDrag[0]);
+  await page.mouse.down();
+  await page.mouse.move(...seamDrag[1], { steps: 8 });
+  await page.waitForFunction(() => window.whittle.viewportRef.current.camDrag?.value > 0.2);
+  assert.equal(await seamField.inputValue(), "0");
+  await page.mouse.up();
+  await waitForCamBuild();
+  assert.ok(Math.abs(Number(await seamField.inputValue()) - 0.25) < 0.015);
+  await checkApt(contour, true);
+  await seamField.fill("0.625");
+  await waitForCamBuild();
+  assert.equal(await seamField.inputValue(), "0.625");
+  await contour.getByRole("button", { name: "Reset entry and exit" }).click();
+  await waitForCamBuild();
+  assert.equal(await seamField.inputValue(), "0");
+
   const preview = () => page.evaluate(() => {
     const { path } = window.whittle.useApp.getState().camContourPlayback;
     return { start: path.centerline[0], next: path.centerline[1], programmed: path.programmed[0] };
   });
+  assert.equal(await millingDirection.inputValue(), "climb");
+  await millingDirection.selectOption("manual");
   for (const [travel, machiningSide, x, yDirection] of [
     ["forward", "center", 10, 1], ["forward", "left", 9.5, 1],
     ["forward", "right", 10.5, 1], ["reverse", "right", 9.5, -1],
@@ -277,6 +317,85 @@ try {
   await contour.getByLabel("Tangent lead-in (mm)").fill("1");
   await contour.getByLabel("Tangent lead-out (mm)").fill("0.75");
   await waitForCamBuild();
+  await generate.click();
+  await contour.getByLabel("Playback timeline").waitFor();
+  const composedLeadFields = [
+    ["Tangent arc lead-in (°)", "90"], ["Lead-in arc radius (mm)", "1.5"], ["Normal lead-in (mm)", "1"],
+    ["Tangent arc lead-out (°)", "90"], ["Lead-out arc radius (mm)", "2"], ["Normal lead-out (mm)", "1"],
+  ];
+  for (const [label, value] of composedLeadFields) {
+    await contour.getByLabel(label).fill(value);
+    await waitForCamBuild();
+  }
+  const cutcom = contour.getByLabel("Export CUTCOM (machine R=0)");
+  await cutcom.check();
+  await waitForCamBuild();
+  const cutcomApt = await checkApt(contour, true);
+  assert.deepEqual(cutcomApt.match(/^CUTCOM\/.*$/gm), [
+    "CUTCOM/LEFT", "CUTCOM/OFF", "CUTCOM/LEFT", "CUTCOM/OFF", "CUTCOM/LEFT", "CUTCOM/OFF",
+  ]);
+  await millingDirection.selectOption("conventional");
+  await waitForCamBuild();
+  assert.equal(await direction.count(), 0);
+  const conventionalApt = await checkApt(contour, true);
+  assert.deepEqual(conventionalApt.match(/^CUTCOM\/.*$/gm), [
+    "CUTCOM/RIGHT", "CUTCOM/OFF", "CUTCOM/RIGHT", "CUTCOM/OFF", "CUTCOM/RIGHT", "CUTCOM/OFF",
+  ]);
+  await contour.getByLabel("Spindle rotation (viewed toward the work)").selectOption("ccw");
+  await waitForCamBuild();
+  const counterclockwiseApt = await checkApt(contour, true);
+  assert.deepEqual(counterclockwiseApt.match(/^CUTCOM\/.*$/gm), cutcomApt.match(/^CUTCOM\/.*$/gm));
+  const stockAllowance = contour.getByLabel("Starting radial stock allowance (mm)");
+  const radialIncrement = contour.getByLabel("Radial pass increment (mm)");
+  const finishAllowance = contour.getByLabel("Finish radial stock allowance (mm)");
+  for (const [field, value] of [[stockAllowance, "1.15"], [radialIncrement, "0.5"], [finishAllowance, "0.15"]]) {
+    await field.fill(value);
+    await waitForCamBuild();
+  }
+  const radialApt = await checkApt(contour, true);
+  assert.equal(radialApt.match(/^CUTCOM\/LEFT$/gm).length, 9);
+  assert.equal(radialApt.match(/^CUTCOM\/OFF$/gm).length, 9);
+  const straightLeadFields = [
+    ["Tangent arc lead-in (°)", "90"], ["Tangent arc lead-out (°)", "90"],
+    ["Tangent lead-in (mm)", "1"], ["Tangent lead-out (mm)", "0.75"],
+  ];
+  for (const [label] of straightLeadFields) {
+    await contour.getByLabel(label).fill("0");
+    await waitForCamBuild();
+  }
+  const optimiseRetracts = contour.getByLabel("Optimise retracts");
+  await optimiseRetracts.check();
+  await waitForCamBuild();
+  const linkedApt = await checkApt(contour, true);
+  await contour.getByRole("status").getByText("6 same-depth feed links.").waitFor();
+  assert.equal(linkedApt.match(/^CUTCOM\/OFF$/gm).length, 9);
+  assert.equal(linkedApt.match(/^CUTCOM\/LEFT$/gm).length, 9);
+  await optimiseRetracts.uncheck();
+  await waitForCamBuild();
+  for (const [label, value] of straightLeadFields) {
+    await contour.getByLabel(label).fill(value);
+    await waitForCamBuild();
+  }
+  for (const field of [finishAllowance, radialIncrement, stockAllowance]) {
+    await field.fill("0");
+    await waitForCamBuild();
+  }
+  await millingDirection.selectOption("manual");
+  await cutcom.uncheck();
+  await waitForCamBuild();
+  await generate.click();
+  await contour.getByLabel("Playback timeline").waitFor();
+  const leadArcs = await page.evaluate(() => {
+    const { path } = window.whittle.useApp.getState().camContourPlayback;
+    return path.motions.filter((motion) => motion.kind === "arc")
+      .map(({ start, center }) => Math.hypot(...start.map((v, i) => v - center[i])));
+  });
+  assert.ok(Math.abs(leadArcs[0] - 1.5) < 1e-8);
+  assert.ok(Math.abs(leadArcs.at(-1) - 2) < 1e-8);
+  for (const [label] of composedLeadFields.filter(([label]) => !label.includes("radius"))) {
+    await contour.getByLabel(label).fill("0");
+    await waitForCamBuild();
+  }
   await generate.click();
   await contour.getByLabel("Playback timeline").waitFor();
   const passes = await page.evaluate(() => {
@@ -603,7 +722,8 @@ try {
   await facing.getByRole("button", { name: "Play", exact: true }).click();
   await facing.getByRole("button", { name: "Pause", exact: true }).click();
 
-  await page.getByRole("list", { name: "Part history" }).getByRole("button").first().click();
+  await page.getByRole("button", { name: "Timeline setup", exact: true }).click();
+  await page.getByRole("listbox", { name: "Timeline setup" }).getByRole("option", { selected: true }).click();
   const [setupDownload] = await Promise.all([
     page.waitForEvent("download", { timeout: 10000 }),
     properties.getByRole("button", { name: "Export setup APT-CL", exact: true }).click(),

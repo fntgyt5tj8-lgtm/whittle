@@ -12,7 +12,7 @@
  *      ambiguous so the user can confirm instead of getting a silent wrong pick.
  */
 import type { EdgeRef, FaceRef, Vec3, VertexRef } from "@whittle/core";
-import { type Edge, type Face, type Shape3D, measureArea } from "replicad";
+import { type Edge, type Face, type Shape3D, getOC, measureArea } from "replicad";
 import type { EdgeInfo, FaceInfo } from "./protocol";
 
 export const sub = (a: Vec3, b: Vec3): Vec3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
@@ -72,6 +72,27 @@ export function edgeInfo(edge: Edge): EdgeInfo {
       const p = edge.pointAt(0.25).toTuple();
       const q = edge.pointAt(0.75).toTuple();
       info.radius = circumradius(a, p, q);
+      const adaptor = new (getOC().BRepAdaptor_Curve)(edge.wrapped);
+      try {
+        const circle = adaptor.Circle();
+        try {
+          const center = circle.Location();
+          const axis = circle.Axis();
+          const normal = axis.Direction();
+          try {
+            info.circle = { center: [center.X(), center.Y(), center.Z()],
+              normal: [normal.X(), normal.Y(), normal.Z()], radius: circle.Radius() };
+          } finally {
+            normal.delete();
+            axis.delete();
+            center.delete();
+          }
+        } finally {
+          circle.delete();
+        }
+      } finally {
+        adaptor.delete();
+      }
     }
   } catch {
     /* optional extras */

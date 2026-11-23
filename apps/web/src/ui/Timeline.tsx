@@ -3,7 +3,7 @@
  * double-click to edit, right-click for more. The marker shows how far the
  * model is built; drag it (or "Roll back to here") to insert steps earlier.
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import type { Feature } from "@whittle/core";
 import { activeEnd, datumKind, dependents, featureInputs, reorderProblem, sketchCountText } from "@whittle/core";
 import { confirmDeleteFeature, editFeature, moveFeature, mutate, updateFeature, useApp, type Pick } from "../state/store";
@@ -11,30 +11,7 @@ import { featureIcon, Icon } from "./icons";
 import { copySteps, folderSteps, renameStep, timelinePick } from "../state/steps";
 import { promptDialog } from "../state/dialogs";
 import { handlePick } from "../state/actions";
-
-/** A menu opened at `x` stays inside the window, even for the last steps at the right end. */
-const menuLeft = (x: number) => Math.max(8, Math.min(x, window.innerWidth - 248));
-
-/** An open menu closes on a click elsewhere, on Escape (before Escape means anything else) and when the window resizes. */
-function useMenuDismiss(open: boolean, close: () => void) {
-  useEffect(() => {
-    if (!open) return;
-    const key = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
-      e.stopPropagation();
-      close();
-    };
-    window.addEventListener("pointerdown", close);
-    window.addEventListener("keydown", key, true);
-    window.addEventListener("resize", close);
-    return () => {
-      window.removeEventListener("pointerdown", close);
-      window.removeEventListener("keydown", key, true);
-      window.removeEventListener("resize", close);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
-}
+import { HistoryControls, HistoryMenu, Marker, menuLeft, useHistoryMarker, useMenuDismiss } from "./HistoryBar";
 
 interface Menu {
   f: Feature;
@@ -86,7 +63,6 @@ function CadTimeline() {
   // The step under the pointer: its parents and children are marked, and its geometry glows in the model.
   const [hot, setHot] = useState<string | null>(null);
   const [menu, setMenu] = useState<Menu | null>(null);
-  const [drag, setDrag] = useState<number | null>(null);
   const [dragStep, setDragStep] = useState<{ from: number; over: number } | null>(null);
   // Steps picked for copying or folding (Shift/Ctrl+click adds); mirrored where the commands can see them.
   const [picked, setPicked] = useState<string[]>([]);
@@ -104,31 +80,23 @@ function CadTimeline() {
       const x = d.folders?.find((y) => y.id === id);
       if (x) recipe(x);
     });
-  const track = useRef<HTMLDivElement>(null);
   const end = activeEnd(doc);
-
-  useMenuDismiss(!!menu, () => setMenu(null));
 
   const setRollback = (i: number | null) =>
     mutate("Move timeline marker", (d) => {
       d.rollback = i === null || i >= d.features.length ? null : i;
     });
 
-  const markerFromPointer = (clientX: number): number => {
-    const items = track.current?.querySelectorAll<HTMLElement>(".step");
-    if (!items || items.length === 0) return 0;
-    let idx = items.length;
-    items.forEach((el, i) => {
-      const r = el.getBoundingClientRect();
-      if (clientX < r.left + r.width / 2 && idx === items.length) idx = i;
-    });
-    return idx;
-  };
+  const { track, markerAt, startDrag } = useHistoryMarker(end, setRollback);
+
+  function moveAction(from: number, to: number) {
+    const reason = to < 0 || to >= doc.features.length ? "It's already at that end." : reorderProblem(doc, from, to);
+    return { reason: reason ?? undefined, run: () => moveFeature(from, to) };
+  }
 
   const isSelected = (f: Feature) =>
     session?.featureId === f.id || selection.some((p) => (p.kind === "datum" && p.id === f.id) || (p.kind === "sketch" && p.sketchId === f.id) || ((p.kind === "body" || p.kind === "face" || p.kind === "edge") && p.bodyId === f.id));
 
-  const markerAt = drag ?? end;
   const hotFeature = doc.features.find((x) => x.id === hot);
   const parents = new Set(hotFeature ? featureInputs(hotFeature) : []);
   const children = new Set(hotFeature ? dependents(doc, hotFeature.id).map((x) => x.id) : []);
@@ -147,20 +115,7 @@ function CadTimeline() {
 
   return (
     <div className="timeline" aria-label="Timeline">
-      <div className="timeline__controls">
-        <button className="iconbtn" title="Go to start" aria-label="Roll back to start" onClick={() => setRollback(0)} disabled={doc.features.length === 0}>
-          <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M5 4 V16 M15 4 L8 10 L15 16" /></svg>
-        </button>
-        <button className="iconbtn" title="Step back" aria-label="Step back" onClick={() => setRollback(Math.max(0, end - 1))} disabled={end === 0}>
-          <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M13 4 L7 10 L13 16" /></svg>
-        </button>
-        <button className="iconbtn" title="Step forward" aria-label="Step forward" onClick={() => setRollback(end + 1)} disabled={end >= doc.features.length}>
-          <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M7 4 L13 10 L7 16" /></svg>
-        </button>
-        <button className="iconbtn" title="Go to end" aria-label="Go to end" onClick={() => setRollback(null)} disabled={doc.rollback === null}>
-          <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M15 4 V16 M5 4 L12 10 L5 16" /></svg>
-        </button>
-      </div>
+      <HistoryControls end={end} count={doc.features.length} setRollback={setRollback} />
 
       <div className="timeline__track" ref={track}>
         {doc.features.length === 0 && <span className="timeline__empty">Your design history appears here, one step per feature.</span>}
@@ -190,6 +145,7 @@ function CadTimeline() {
               })()}
               {i === markerAt && <Marker onDown={(e) => startDrag(e)} at={markerAt} max={doc.features.length} onStep={(to) => setRollback(to >= doc.features.length ? null : to)} />}
               <button
+                data-history-step
                 draggable
                 onDragStart={(e) => {
                   e.dataTransfer.effectAllowed = "move";
@@ -279,124 +235,25 @@ function CadTimeline() {
         </div>
       )}
 
-      {menu && (
-        <div className="menu" style={{ left: menuLeft(menu.x), top: menu.y - 8 }} role="menu" onPointerDown={(e) => e.stopPropagation()}>
-          <div className="menu__title">{menu.f.name}</div>
-          <button role="menuitem" onClick={() => (setMenu(null), editFeature(menu.f.id))}>
-            <Icon name="edit" size={16} /> Edit
-          </button>
-          <button
-            role="menuitem"
-            onClick={() => {
-              setMenu(null);
-              updateFeature(menu.f.id, menu.f.suppressed ? "Unsuppress" : "Suppress", (d) => void (d.suppressed = !d.suppressed));
-            }}
-          >
-            <Icon name="suppress" size={16} /> {menu.f.suppressed ? "Turn back on" : "Turn off (suppress)"}
-          </button>
-          <button role="menuitem" onClick={() => (setMenu(null), void renameStep(menu.f.id))}>
-            <Icon name="edit" size={16} /> Rename<kbd>F2</kbd>
-          </button>
-          {/* A move that would be refused isn't offered: it is greyed with the reason (audit U-15). */}
-          {(
-            [
-              ["Move earlier", "arrowLeft", menu.index - 1],
-              ["Move later", "arrowRight", menu.index + 1],
-            ] as const
-          ).map(([label, icon, to]) => {
-            const why = to < 0 || to >= doc.features.length ? "It's already at that end." : reorderProblem(doc, menu.index, to);
-            return (
-              <button key={label} role="menuitem" disabled={!!why} title={why ?? undefined} onClick={() => (setMenu(null), moveFeature(menu.index, to))}>
-                <Icon name={icon} size={16} />
-                <span className="menu__text">
-                  {label}
-                  {why && <small>{why}</small>}
-                </span>
-              </button>
-            );
-          })}
-          <button
-            role="menuitem"
-            onClick={() => {
-              setMenu(null);
-              if (!picked.includes(menu.f.id)) timelinePick.ids = [menu.f.id];
-              copySteps();
-            }}
-          >
-            <Icon name="copy" size={16} /> Copy {picked.length > 1 && picked.includes(menu.f.id) ? `${picked.length} steps` : ""}
-          </button>
-          <button
-            role="menuitem"
-            onClick={() => {
-              setMenu(null);
-              if (!picked.includes(menu.f.id)) timelinePick.ids = [menu.f.id];
-              void folderSteps().then(() => setPicked([]));
-            }}
-          >
-            <Icon name="folder" size={16} /> Put in a folder{picked.length > 1 && picked.includes(menu.f.id) ? ` (${picked.length} steps)` : ""}
-          </button>
-          <button role="menuitem" onClick={() => (setMenu(null), setRollback(menu.index))}>
-            <Icon name="rollback" size={16} /> Roll back to before this
-          </button>
-          <button
-            role="menuitem"
-            className="danger"
-            onClick={() => {
-              setMenu(null);
-              void confirmDeleteFeature(menu.f.id);
-            }}
-          >
-            <Icon name="trash" size={16} /> Delete
-          </button>
-        </div>
-      )}
+      {menu && <HistoryMenu x={menu.x} y={menu.y} name={menu.f.name} suppressed={menu.f.suppressed}
+        close={() => setMenu(null)} pickedCount={picked.includes(menu.f.id) ? picked.length : 0}
+        actions={{
+          edit: { run: () => editFeature(menu.f.id) },
+          suppress: { run: () => updateFeature(menu.f.id, menu.f.suppressed ? "Unsuppress" : "Suppress", (d) => void (d.suppressed = !d.suppressed)) },
+          rename: { run: () => void renameStep(menu.f.id) },
+          earlier: moveAction(menu.index, menu.index - 1),
+          later: moveAction(menu.index, menu.index + 1),
+          copy: { run: () => {
+            if (!picked.includes(menu.f.id)) timelinePick.ids = [menu.f.id];
+            copySteps();
+          } },
+          folder: { run: () => {
+            if (!picked.includes(menu.f.id)) timelinePick.ids = [menu.f.id];
+            void folderSteps().then(() => setPicked([]));
+          } },
+          rollback: { run: () => setRollback(menu.index) },
+          delete: { run: () => void confirmDeleteFeature(menu.f.id) },
+        }} />}
     </div>
-  );
-
-  function startDrag(e: React.PointerEvent) {
-    e.preventDefault();
-    const move = (ev: PointerEvent) => setDrag(markerFromPointer(ev.clientX));
-    const up = (ev: PointerEvent) => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-      window.removeEventListener("pointercancel", cancel);
-      setDrag(null);
-      setRollback(markerFromPointer(ev.clientX));
-    };
-    // A cancelled touch puts the marker back where it was.
-    const cancel = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-      window.removeEventListener("pointercancel", cancel);
-      setDrag(null);
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
-    window.addEventListener("pointercancel", cancel);
-  }
-}
-
-/** A real slider (audit UI-6): focusable, with its value, and the arrow keys step it like the buttons do. */
-function Marker({ onDown, at, max, onStep }: { onDown: (e: React.PointerEvent) => void; at: number; max: number; onStep: (to: number) => void }) {
-  return (
-    <span
-      className="marker"
-      onPointerDown={onDown}
-      title="Drag to roll the design back in time"
-      role="slider"
-      tabIndex={0}
-      aria-label="Timeline marker"
-      aria-valuemin={0}
-      aria-valuemax={max}
-      aria-valuenow={at}
-      aria-valuetext={`${at} of ${max} steps`}
-      onKeyDown={(e) => {
-        const to = e.key === "ArrowLeft" ? at - 1 : e.key === "ArrowRight" ? at + 1 : e.key === "Home" ? 0 : e.key === "End" ? max : null;
-        if (to === null) return;
-        e.preventDefault();
-        e.stopPropagation();
-        onStep(Math.max(0, Math.min(max, to)));
-      }}
-    />
   );
 }

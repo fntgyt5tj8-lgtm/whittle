@@ -1,7 +1,7 @@
 import { CAM_WORLD, cross, dot, isCamFrame, subtract, transformCamVector, unit, type CamFrame, type CamVector } from "../geometry/frames";
 import { validateToolpath } from "../toolpath/validation";
 import type { CamResult } from "../model";
-import type { CamToolpath } from "../toolpath/model";
+import type { CamMotion, CamToolpath } from "../toolpath/model";
 
 export interface AptOperation {
   readonly name: string;
@@ -9,6 +9,8 @@ export interface AptOperation {
   readonly frame: CamFrame;
   readonly toolNumber?: number;
   readonly spindleRpm?: number;
+  /** Signal zero-radius cutter compensation without further offsetting the path. */
+  readonly cutcom?: "left" | "right";
 }
 
 function fields(...values: number[]) {
@@ -18,7 +20,13 @@ function fields(...values: number[]) {
 const failure = (errors: string[]): CamResult<string> => ({ ok: false, errors });
 const comment = (value: string) => value.replace(/[^\x20-\x7e]/g, " ");
 
-function writeMotions(lines: string[], path: CamToolpath, frame: CamFrame, linearizeHelices: boolean): string[] {
+function cutting(motion: CamMotion | undefined) {
+  return motion?.kind === "arc" || (motion?.kind === "line" && motion.mode === "feed");
+}
+
+function writeMotions(
+  lines: string[], path: CamToolpath, frame: CamFrame, linearizeHelices: boolean, cutcom?: AptOperation["cutcom"],
+): string[] {
   const errors = validateToolpath(path);
   if (errors.length) return errors;
   const point = (v: CamVector) => transformCamVector(v, frame, CAM_WORLD, "point");
@@ -37,6 +45,15 @@ function writeMotions(lines: string[], path: CamToolpath, frame: CamFrame, linea
       const nextFeed = motion.kind === "line" && motion.mode === "plunge" ? path.plungeFeed : path.feed;
       if (feed !== nextFeed) lines.push(`FEDRAT/${fields(nextFeed)},MMPM`);
       feed = nextFeed;
+    }
+    if (cutcom && cutting(motion)) {
+      const entering = !cutting(path.motions[index - 1]);
+      const leaving = !cutting(path.motions[index + 1]);
+      if ((entering || leaving) && (motion.kind !== "line" || (entering && leaving))) {
+        return ["CUTCOM requires separate straight feed moves at entry and exit of each pass."];
+      }
+      if (entering) lines.push(cutcom === "left" ? "CUTCOM/LEFT" : "CUTCOM/RIGHT");
+      if (leaving) lines.push("CUTCOM/OFF");
     }
     if (motion.kind === "arc") {
       if (motion.helical && !linearizeHelices) return [`APT-CL export does not support helical motion ${index + 1}.`];
@@ -83,7 +100,7 @@ export function exportAptProgram(name: string, operations: readonly AptOperation
   if (!operations.length) return failure(["The program has no milling operations."]);
   const lines = [`PARTNO/${comment(name)}`, "UNITS/MM", "MULTAX/ON", "$$ FRAME CAD WORLD"];
   let activeTool: number | undefined;
-  for (const { name, path, frame, toolNumber, spindleRpm } of operations) {
+  for (const { name, path, frame, toolNumber, spindleRpm, cutcom } of operations) {
     if (!isCamFrame(frame)) return failure([`${name}: Invalid toolpath frame.`]);
     if (toolNumber !== undefined && (!Number.isSafeInteger(toolNumber) || toolNumber < 1)) {
       return failure([`${name}: Invalid tool number.`]);
@@ -96,7 +113,7 @@ export function exportAptProgram(name: string, operations: readonly AptOperation
     activeTool = toolNumber;
     lines.push(`CUTTER/${fields(path.tool.diameter)}`);
     if (spindleRpm !== undefined) lines.push(`$$ SPINDLE RPM ${fields(spindleRpm)}`);
-    const errors = writeMotions(lines, path, frame, true);
+    const errors = writeMotions(lines, path, frame, true, cutcom);
     if (errors.length) return failure(errors.map((error) => `${name}: ${error}`));
   }
   return { ok: true, value: [...lines, "FINI", ""].join("\n") };

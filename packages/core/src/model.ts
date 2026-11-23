@@ -852,6 +852,8 @@ export interface NamedView {
   /** Azimuth around Z and angle from +Z, radians. */
   theta: number;
   phi: number;
+  /** Camera quaternion in XYZW order. Older views store only angles. */
+  orientation?: [number, number, number, number];
 }
 
 export type DatumKind = "plane" | "axis" | "point" | "csys";

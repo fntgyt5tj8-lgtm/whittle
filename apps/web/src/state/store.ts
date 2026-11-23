@@ -45,6 +45,8 @@ export interface CamContourPlayback {
   readonly ids: readonly string[];
   readonly showTool: boolean;
   readonly showCenterline?: boolean;
+  readonly preserveCamera?: boolean;
+  readonly editContour?: (key: NonNullable<ContourPreview["contourHandles"]>[number]["key"], value: number) => void;
 }
 
 /** `at` is the world point that was clicked (used by holes and measuring). */

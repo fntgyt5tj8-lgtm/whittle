@@ -3,7 +3,10 @@ export { canCut, cuttingComponent, cuttingToolType, CUTTING_TOOL_TYPES } from ".
 export type { CamCuttingGeometry, CuttingToolType } from "./toolGeometry";
 export type { CamToolComponent, CamToolComponentRole, CamToolPosition, CamToolSourceTransform } from "./model";
 export type { CamCuttingConditions, CamBodyRole, CamCadSource, CamContextFrame, CamGeometryRef, CamWorkpieceContext, CamMachiningStage, CamPlanItem, CamPlanStage, CamProcess, CamProject, CamResult, CamSetup, CircularProfileSettings, FlatEndmill } from "./model";
-export { addPlanStage, addProcess, addSetup, createProject, getProcessPlan, migrateWorkpieceContexts } from "./operations";
+export {
+  activePlanEnd, addPlanStage, addProcess, addSetup, createProject, deletePlannedOperation, getProcessPlan,
+  migrateWorkpieceContexts, movePlannedOperation, plannedOperations, planMoveProblem, rollBackPlan,
+} from "./operations";
 export { validateOperationTooling, validateProject } from "./validation";
 export { CAM_WORLD, isCamFrame, transformCamVector } from "./geometry/frames";
 export { normalFrame, flipCamFrame, camPlaneAt } from "./geometry/frames";
@@ -16,7 +19,7 @@ export { validateToolpath } from "./toolpath/validation";
 export type { AptOperation } from "./export/apt";
 export { exportAptCl, exportAptProgram } from "./export/apt";
 export type { ContourMillingSettings } from "./model";
-export { generateContour } from "./algorithms/contour";
+export { contourTravel, generateContour } from "./algorithms/contour";
 export type { ContourCurve, ContourPoint, ContourPreview } from "./algorithms/contour";
 export type { FacingMillingSettings, PocketMillingSettings } from "./model";
 export { generateFacing } from "./algorithms/facing";

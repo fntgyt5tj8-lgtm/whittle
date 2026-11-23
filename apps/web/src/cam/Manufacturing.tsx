@@ -24,10 +24,11 @@ export function ManufacturingSlots({ enabled, children }: { enabled: boolean; ch
   const openProperties = () => useApp.setState({ camToolSelection: null, panelOpen: true, ...(isNarrow() ? { browserOpen: false } : {}) });
   function saveProject(update: (current: CamProject) => CamProject, label: string, mergeKey?: string) {
     const state = useApp.getState();
-    if (state.documentKind !== "cam") return;
+    if (state.documentKind !== "cam" || state.doc.id !== doc.id) return;
     const current = state.doc.manufacturing ?? emptyProject;
-    const next = update(migrateWorkpieceContexts(current));
-    if (next !== current) {
+    const migrated = migrateWorkpieceContexts(current);
+    const next = update(migrated);
+    if (next !== migrated) {
       mutate(label, (draft) => { draft.manufacturing = next as Draft<CamProject>; }, mergeKey);
     }
   }

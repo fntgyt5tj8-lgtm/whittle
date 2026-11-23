@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import {
-  CAM_WORLD, exportAptProgram, type AptOperation, type CamWorkpieceContext, addProcess, addSetup, getProcessPlan, validateOperationTooling, validateProject,
+  CAM_WORLD, plannedOperations, contourTravel, exportAptProgram, type AptOperation, type CamWorkpieceContext, addProcess, addSetup, getProcessPlan, validateOperationTooling, validateProject,
   type CamCuttingConditions, type CamGeometryRef, type CamMachiningStage, type CamPlanItem, type CamProcess, type CamProject, type CamSetup, type CircularProfileSettings, type ContourMillingSettings, type FacingMillingSettings, type PocketMillingSettings,
 } from "@whittle/cam";
 import type { CamCadAdapter } from "../cadAdapter";
@@ -15,13 +15,10 @@ import { buildCircularProfile } from "../circularProfile";
 import { downloadApt } from "../downloadApt";
 import { ProfileExport } from "./ProfileExport";
 import { MillIcon } from "./icons/MillIcon";
-import { PlanIcon } from "./icons/PlanIcon";
+import { CamTimeline, machiningLabels, stageLabels } from "./CamTimeline";
 import "./cam.css";
 
 export const manufacturingLabel = "Manufacturing";
-
-const machiningLabels = { main: "Main machining", sub: "Sub / back-working" };
-const stageLabels = { transfer: "Transfer", ejection: "Ejection" };
 
 function itemKey(item: CamPlanItem) {
   return item.kind === "process" ? `process:${item.processId}` : `stage:${item.id}`;
@@ -167,7 +164,7 @@ export function useCamWorkspace(
     const kind = mode === "contour" ? "profile" : mode;
     const id = uid(kind);
     const contourMilling: ContourMillingSettings | undefined = mode === "contour"
-      ? { side: "center", direction: "forward", depth: "", clearance: "2" } : undefined;
+      ? { side: "center", direction: "forward", millingDirection: "climb", depth: "", clearance: "2" } : undefined;
     const pocketMilling: PocketMillingSettings | undefined = kind === "pocket" || kind === "adaptive"
       ? { depth: "", clearance: "2", stepover: kind === "adaptive" ? "15" : "50" } : undefined;
     const facingMilling: FacingMillingSettings | undefined = kind === "facing"
@@ -330,7 +327,18 @@ export function useCamWorkspace(
         const generated = generateMilling(cad, documentId, item, settings, tool, frame, references);
         if (!generated.ok) return fail(generated.errors.map((error) => `${item.name}: ${error}`));
         const { path, diameter } = generated.value;
-        operations.push({ ...metadata, frame: path.frame, path: {
+        const contour = item.contourMilling;
+        const travelSide = contour && contourTravel(contour).side;
+        const cutcom = contour?.aptCutcom && travelSide !== "center" ? travelSide : undefined;
+        if (cutcom && contour) {
+          const straightLead = (normal?: string, tangent?: string, arc?: string) =>
+            Number(normal ?? 0) > 0 || (Number(tangent ?? 0) > 0 && Number(arc ?? 0) === 0);
+          if (!straightLead(contour.normalLeadIn, contour.leadIn, contour.arcLeadIn)
+            || !straightLead(contour.normalLeadOut, contour.leadOut, contour.arcLeadOut)) {
+            return fail([`${item.name}: CUTCOM needs a straight outer move at both entry and exit. Use a normal lead, or a tangent lead with the arc disabled.`]);
+          }
+        }
+        operations.push({ ...metadata, cutcom, frame: path.frame, path: {
           tool: { kind: "flat-endmill", diameter }, motions: path.motions,
           feed: Number(conditions?.feed), plungeFeed: Number(conditions?.plungeFeed),
         } });
@@ -352,11 +360,8 @@ export function useCamWorkspace(
     setAptError(undefined);
     downloadApt(filename, apt.value);
   }
-  const setupOperations = setup ? plan.flatMap((item) => {
-    if (item.kind !== "process") return [];
-    const operation = project.processes.find(({ id }) => id === item.processId);
-    return operation?.setupId === setup.id ? [operation] : [];
-  }) : [];
+  const setupOperations = setup ? plannedOperations(project, setup.id) : [];
+  const operationActive = !!process && setupOperations.includes(process);
 
   const properties = (
     <div className="cam-properties">
@@ -463,8 +468,9 @@ export function useCamWorkspace(
           ? (millingSettings ? "Choose a native sketch." : "Choose a built sketch with one circle.")
           : "Click a sketch in the 3D view or Browser."}</p>}
       </>}
+      {process && !operationActive && <p role="status">{process.suppressed ? "This operation is suppressed." : "This operation is after the rollback marker."}</p>}
       {process && millingSettings && canPickGeometry && !pickingGeometry && <ContourMilling
-        key={`${documentId}/${process.id}`} cad={cad} process={process} settings={millingSettings}
+        key={`${documentId}/${process.id}`} cad={cad} process={process} settings={millingSettings} operationActive={operationActive}
         tool={operationTool} resolveFrame={resolveFrame} validateReferences={referenceErrors} onChange={changeMilling} onGeometryChange={changeModelGeometry} />}
       {process && millingSettings && canPickGeometry && !pickingGeometry && <>
         <dl>{([
@@ -474,14 +480,14 @@ export function useCamWorkspace(
           <dd><input id={`cam-milling-${key}`} type="number" step="any" value={process.cuttingConditions?.[key] ?? ""}
             onChange={(event) => changeCuttingConditions({ [key]: event.target.value })} /></dd>
         </div>)}</dl>
-        <button type="button" onClick={() => exportOperations([process], process.id)}>Export APT-CL</button>
+        <button type="button" disabled={!operationActive} onClick={() => exportOperations([process], process.id)}>Export APT-CL</button>
       </>}
       {setup && !selectedItem && !!setupOperations.length &&
         <button type="button" onClick={() => exportOperations(setupOperations, setup.name)}>Export setup APT-CL</button>}
       {aptError?.project === project && aptError.selection === selectedKey &&
         <ul role="alert">{aptError.errors.map((error, index) => <li key={index}>{error}</li>)}</ul>}
       {process && !millingSettings && <ProfileExport key={`${documentId}/${process.id}/${process.contour?.entityId ?? ""}/${process.toolPositionId ?? ""}/${toolDiameter ?? ""}`}
-        name={process.id} settings={process.profile} onChange={changeProfile} resolveFrame={resolveFrame} validateReferences={operationErrors}
+        name={process.id} operationActive={operationActive} settings={process.profile} onChange={changeProfile} resolveFrame={resolveFrame} validateReferences={operationErrors}
         resolveOrientation={(setup, sketch) => process.orientation
           ? resolveOrientation(cad, documentId, setup, process.orientation, sketch) : undefined}
         hasContour={!!process.contour} hasTool={process.toolPositionId !== undefined} toolDiameter={toolDiameter}
@@ -495,36 +501,8 @@ export function useCamWorkspace(
     </div>
   );
 
-  const timeline = (
-    <ol className="cam-timeline" role="list" aria-label="Part history">
-      {!project.setups.length && <li className="cam-timeline__empty">Create a setup to start the part history.</li>}
-      {project.setups.map((item) => (
-        <li key={item.id}>
-          <button className="cam-timeline__tile" type="button" aria-pressed={!selectedItem && setup?.id === item.id}
-            onClick={() => selectTile(`setup:${item.id}`)}>
-            <PlanIcon kind="setup" />{item.name}
-          </button>
-        </li>
-      ))}
-      {plan.map((item) => {
-        const operation = item.kind === "process"
-          ? project.processes.find((candidate) => candidate.id === item.processId)
-          : undefined;
-        if (item.kind === "process" && !operation) return null;
-        const label = item.kind === "process" ? machiningLabels[item.stage] : stageLabels[item.kind];
-        const key = itemKey(item);
-        return (
-          <li key={key}>
-            <button className="cam-timeline__tile" type="button" aria-pressed={selectedKey === key}
-              onClick={() => selectTile(key)}>
-              {item.kind === "process" ? <MillIcon size={18} /> : <PlanIcon kind={item.kind} />}
-              {operation ? `${operation.name} · ${label}` : label}
-            </button>
-          </li>
-        );
-      })}
-    </ol>
-  );
+  const timeline = <CamTimeline key={documentId} project={project} selectedKey={selectedKey}
+    setupId={setup?.id} select={selectTile} save={setProject} />;
 
   return { commands, properties, timeline, pickingSketch, pickingFace: pickingFace || pickingFacingFace };
 }

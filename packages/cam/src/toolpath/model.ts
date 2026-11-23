@@ -9,7 +9,7 @@ interface MotionEndpoints {
 }
 
 export type CamMotion = MotionEndpoints & (
-  | { readonly kind: "line"; readonly mode: "feed" | "plunge" | "rapid" }
+  | { readonly kind: "line"; readonly mode: "feed" | "plunge" | "rapid" | "link" }
   | {
     readonly kind: "arc";
     readonly center: CamVector;

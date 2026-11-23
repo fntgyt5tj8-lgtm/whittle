@@ -27,6 +27,23 @@ describe("independent Manufacturing documents", () => {
     expect(() => deserializeCamDocument(zipSync(members))).toThrow(/Unsupported CAM document format/);
   });
 
+  it("round-trips contour seam and combined entry and exit moves", () => {
+    const doc = newDocument("Contours");
+    doc.manufacturing = {
+      ...createProject("Contours"),
+      setups: [{ id: "setup", name: "Setup", contexts: [] }],
+      processes: [{
+        id: "contour", name: "Contour", setupId: "setup", kind: "profile",
+        contourMilling: { side: "right", direction: "reverse", depth: "1", clearance: "2",
+          leadIn: "1.25", leadOut: "2.75", seam: "0.123456789", aptCutcom: true, millingDirection: "climb", spindleDirection: "ccw",
+          stockAllowance: "1.6", radialIncrement: "0.5", finishAllowance: "0.1", optimiseRetracts: true,
+          arcLeadIn: "90", arcLeadInRadius: "1.5", normalLeadIn: "1",
+          arcLeadOut: "45", arcLeadOutRadius: "2", normalLeadOut: "0.25" },
+      }],
+    };
+    expect(deserializeCamDocument(serializeCamDocument(doc)).manufacturing).toEqual(doc.manufacturing);
+  });
+
   it("round-trips the facing face and raster settings through a CAM file", () => {
     const doc = newDocument("Facing");
     doc.manufacturing = {

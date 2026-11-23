@@ -21,7 +21,7 @@ const angle = (a: ContourPoint) => Math.atan2(a[1], a[0]);
 const polar = (a: number): ContourPoint => [Math.cos(a), Math.sin(a)];
 const left = (a: ContourPoint): ContourPoint => [-a[1], a[0]];
 const ccw = (a: number) => ((a % TAU) + TAU) % TAU;
-const near = (a: ContourPoint, b: ContourPoint) => length(sub(a, b)) <= EPS;
+const near = (a: ContourPoint, b: ContourPoint, tolerance = EPS) => length(sub(a, b)) <= tolerance;
 const fail = (message: string): CamResult<never> => ({ ok: false, errors: [message] });
 
 export function contourPoint(curve: ContourCurve, t: number): ContourPoint {
@@ -43,19 +43,19 @@ function reverse(curve: ContourCurve): ContourCurve {
     : { ...curve, start: curve.start + curve.sweep, sweep: -curve.sweep };
 }
 
-function parameter(curve: ContourCurve, p: ContourPoint) {
+function parameter(curve: ContourCurve, p: ContourPoint, tolerance = EPS) {
   if (curve.kind === "line") {
     const d = sub(curve.b, curve.a);
     return dot2(sub(p, curve.a), d) / dot2(d, d);
   }
-  if (near(p, contourPoint(curve, 0))) return 0;
-  if (near(p, contourPoint(curve, 1))) return 1;
+  if (near(p, contourPoint(curve, 0), tolerance)) return 0;
+  if (near(p, contourPoint(curve, 1), tolerance)) return 1;
   return ccw((angle(sub(p, curve.c)) - curve.start) * Math.sign(curve.sweep)) / Math.abs(curve.sweep);
 }
 
-function onCurve(curve: ContourCurve, p: ContourPoint) {
-  const t = parameter(curve, p);
-  return near(p, contourPoint(curve, Math.max(0, Math.min(1, t))));
+function onCurve(curve: ContourCurve, p: ContourPoint, tolerance = EPS) {
+  const t = parameter(curve, p, tolerance);
+  return near(p, contourPoint(curve, Math.max(0, Math.min(1, t))), tolerance);
 }
 
 function lineCircle(line: Line, arc: Arc): ContourPoint[] {
@@ -85,12 +85,19 @@ function intersections(a: ContourCurve, b: ContourCurve): ContourPoint[] {
 }
 
 function intersectsExcept(a: ContourCurve, b: ContourCurve, shared: readonly ContourPoint[]) {
+  const unshared = (p: ContourPoint) => !shared.some((q) => near(q, p));
+  // An intersection of the infinite supports must lie on both finite curves.
+  // Using the join tolerance here extends both ends into short connector arcs.
+  if (intersections(a, b).some((p) => {
+    const tolerance = 32 * Number.EPSILON * Math.max(1, length(p), curveLength(a), curveLength(b));
+    return onCurve(a, p, tolerance) && onCurve(b, p, tolerance) && unshared(p);
+  })) return true;
+
   // Endpoints and midpoints reveal coincident spans, which have no isolated roots.
-  const candidates = [
-    ...intersections(a, b),
-    ...[0, 0.5, 1].flatMap((t) => [contourPoint(a, t), contourPoint(b, t)]),
-  ];
-  return candidates.some((p) => onCurve(a, p) && onCurve(b, p) && !shared.some((q) => near(q, p)));
+  return [0, 0.5, 1].some((t) => {
+    const pa = contourPoint(a, t), pb = contourPoint(b, t);
+    return (onCurve(b, pa) && unshared(pa)) || (onCurve(a, pb) && unshared(pb));
+  });
 }
 
 function simple(curves: readonly ContourCurve[], closed: boolean) {
@@ -235,15 +242,42 @@ function offset(curves: readonly ContourCurve[], closed: boolean, d: number): Ca
   return { ok: true, value: result };
 }
 
-function tangentLead(path: readonly ContourCurve[], extension: number, entry: boolean): Line {
+function makeLead(
+  edge: ContourCurve, entry: boolean, tangentLength: number, normalLength: number,
+  arcAngle: number, arcRadius: number, side: number,
+): ContourCurve[] {
   const t = entry ? 0 : 1;
-  const edge = entry ? path[0]! : path.at(-1)!;
-  const contact = contourPoint(edge, t);
-  const free = add(contact, scale(tangent(edge, t), entry ? -extension : extension));
-  return entry ? { kind: "line", a: free, b: contact } : { kind: "line", a: contact, b: free };
+  const along = tangent(edge, t);
+  const outward = scale(left(along), side || 1);
+  const travel = entry ? -1 : 1;
+  // Build from the contour outward, then reverse the sequence for entry.
+  const lead: ContourCurve[] = [];
+  let point = contourPoint(edge, t);
+  if (tangentLength) {
+    const end = add(point, scale(along, travel * tangentLength));
+    lead.push({ kind: "line", a: point, b: end });
+    point = end;
+  }
+  if (arcAngle) {
+    const arc: Arc = { kind: "arc", c: add(point, scale(outward, arcRadius)), r: arcRadius,
+      start: angle(scale(outward, -1)), sweep: arcAngle * Math.PI / 180 * (side || 1) * travel };
+    lead.push(arc);
+    point = contourPoint(arc, 1);
+  }
+  if (normalLength) lead.push({ kind: "line", a: point, b: add(point, scale(outward, normalLength)) });
+  return entry ? lead.reverse().map(reverse) : lead;
+}
+
+export interface ContourEditHandle {
+  readonly key: "leadIn" | "leadOut" | "seam";
+  readonly position: CamVector;
+  readonly normal: CamVector;
+  readonly traceFrom: CamVector;
+  project(point: CamVector): { value: number; position: CamVector; traceFrom: CamVector };
 }
 
 export interface ContourPreview {
+  readonly contourHandles?: readonly ContourEditHandle[];
   readonly programmed: readonly CamVector[];
   readonly adaptiveTransitionCuts?: number;
   readonly stayDownLinkCount?: number;
@@ -285,6 +319,16 @@ export function planMillingDepths(
     i + 1 === passCount ? -depth : -(i + 1) * stepdown) };
 }
 
+/** Resolve travel relative to the saved contour direction without moving the compensated path to the other side. */
+export function contourTravel(settings: ContourMillingSettings) {
+  const { side, millingDirection, spindleDirection = "cw" } = settings;
+  if (side === "center" || !millingDirection || millingDirection === "manual") {
+    return { side, reversed: false };
+  }
+  const travelSide = (spindleDirection === "cw") === (millingDirection === "climb") ? "left" : "right";
+  return { side: travelSide, reversed: side !== travelSide } as const;
+}
+
 export function generateContour(
   input: readonly ContourCurve[], sketch: CamFrame, setup: CamFrame,
   settings: ContourMillingSettings, diameter: number, outputFrame = setup,
@@ -292,29 +336,183 @@ export function generateContour(
   const depths = planMillingDepths(sketch, setup, settings, diameter);
   if (!depths.ok) return depths;
   const leadIn = Number(settings.leadIn ?? 0), leadOut = Number(settings.leadOut ?? 0);
-  if (![leadIn, leadOut].every((value) => Number.isFinite(value) && (value === 0 || value > EPS))) {
+  const normalIn = Number(settings.normalLeadIn ?? 0), normalOut = Number(settings.normalLeadOut ?? 0);
+  const arcIn = Number(settings.arcLeadIn ?? 0), arcOut = Number(settings.arcLeadOut ?? 0);
+  if (![leadIn, leadOut, normalIn, normalOut].every((value) => Number.isFinite(value) && (value === 0 || value > EPS))) {
     return fail("Enter zero or a positive lead length greater than the contour tolerance.");
+  }
+  const arcInRadius = settings.arcLeadInRadius?.trim() ? Number(settings.arcLeadInRadius) : diameter / 2;
+  const arcOutRadius = settings.arcLeadOutRadius?.trim() ? Number(settings.arcLeadOutRadius) : diameter / 2;
+  for (const [sweep, radius] of [[arcIn, arcInRadius], [arcOut, arcOutRadius]] as const) {
+    if (!Number.isFinite(sweep) || sweep < 0 || sweep > 180) return fail("Enter a tangent arc angle between 0° and 180°.");
+    if (sweep > 0 && (!Number.isFinite(radius) || radius <= EPS || sweep * Math.PI / 180 * radius <= EPS)) {
+      return fail("Enter a positive tangent arc radius that gives a move longer than the contour tolerance.");
+    }
   }
   const chain = orderContour(input);
   if (!chain.ok) return chain;
   const { closed } = chain.value;
   const curves = settings.direction === "reverse" ? chain.value.curves.slice().reverse().map(reverse) : chain.value.curves;
   const side = settings.side === "left" ? 1 : settings.side === "right" ? -1 : 0;
-  const radius = side * diameter / 2;
-  const center = offset(curves, closed, radius);
-  if (!center.ok) return center;
-  const entry = leadIn ? tangentLead(center.value, leadIn, true) : undefined;
-  const exit = leadOut ? tangentLead(center.value, leadOut, false) : undefined;
-  for (const [lead, label, contact] of [[entry, "Lead-in", 1], [exit, "Lead-out", 0]] as const) {
-    if (!lead) continue;
-    if (center.value.some((curve) => intersectsExcept(lead, curve, [contourPoint(lead, contact)]))
-      || (side !== 0 && curves.some((curve) => curveDistance(lead, curve) < Math.abs(radius) - 2 * EPS))) {
-      return fail(`${label} crosses the toolpath or gouges the contour. Shorten it or set it to zero.`);
-    }
+  const seam = Number(settings.seam ?? 0);
+  if (closed && (!Number.isFinite(seam) || seam < 0 || seam > 1)) {
+    return fail("Enter a seam fraction between 0 and 1.");
+  }
+  const travel = contourTravel(settings);
+  const stock = Number(settings.stockAllowance ?? 0);
+  const increment = Number(settings.radialIncrement ?? 0);
+  const finishStock = increment ? Number(settings.finishAllowance ?? 0) : stock;
+  if (![stock, increment, finishStock].every((value) => Number.isFinite(value) && value >= 0)) {
+    return fail("Enter nonnegative radial stock, increment and finish allowance values.");
+  }
+  if (side === 0 && (stock || increment || finishStock)) {
+    return fail("Select a left or right machining side for radial stock allowance and passes.");
+  }
+  if (finishStock > stock) return fail("Finish allowance must be at most the starting stock allowance.");
+  if (increment > 0 && increment <= CAM_LENGTH_TOLERANCE) {
+    return fail("Enter a radial increment greater than the toolpath tolerance.");
+  }
+  const ratio = increment ? (stock - finishStock) / increment : 0;
+  const roughCount = Math.ceil(ratio - Number.EPSILON * ratio);
+  if (!Number.isFinite(roughCount) || (roughCount + 1) * depths.value.length > 500) {
+    return fail("Increase radial increment or stepdown to generate at most 500 total contour passes.");
   }
 
-  const cut = [...(entry ? [entry] : []), ...center.value, ...(exit ? [exit] : [])];
-  return buildPlanarPreview([curves], center.value, [cut], sketch, setup, depths.value, Number(settings.clearance), undefined, undefined, outputFrame);
+  function planPass(allowance: number) {
+    const radius = side * (diameter / 2 + allowance);
+    const center = offset(curves, closed, radius);
+    if (!center.ok) return center;
+    const lengths = center.value.map(curveLength);
+    const total = lengths.reduce((sum, span) => sum + span, 0);
+    const requested = closed && seam < 1 ? seam * total : 0;
+    let index = 0;
+    let distance = requested;
+    while (index < lengths.length - 1 && distance >= lengths[index]!) distance -= lengths[index++]!;
+    const span = lengths[index]!;
+    if (span - distance <= CAM_LENGTH_TOLERANCE) {
+      index = (index + 1) % lengths.length;
+      distance = 0;
+    }
+    const t = distance <= CAM_LENGTH_TOLERANCE ? 0 : distance / span;
+    const seamCurve = center.value[index]!;
+    const fromSeam = t === 0
+      ? [...center.value.slice(index), ...center.value.slice(0, index)]
+      : [trimContourCurve(seamCurve, t, 1), ...center.value.slice(index + 1),
+        ...center.value.slice(0, index), trimContourCurve(seamCurve, 0, t)];
+    const ordered = travel.reversed ? fromSeam.reverse().map(reverse) : fromSeam;
+    const leadSide = travel.reversed ? -side : side;
+    const first = ordered[0]!, last = ordered.at(-1)!;
+    const entry = makeLead(first, true, leadIn, normalIn, arcIn, arcInRadius, leadSide);
+    const exit = makeLead(last, false, leadOut, normalOut, arcOut, arcOutRadius, leadSide);
+    for (const [lead, label, contact, adjacent] of [
+      [entry, "Lead-in", contourPoint(first, 0), entry.length - 1],
+      [exit, "Lead-out", contourPoint(last, 1), 0],
+    ] as const) {
+      if (!simple(lead, false) || lead.some((move, i) =>
+        center.value.some((curve) => intersectsExcept(move, curve, i === adjacent ? [contact] : []))
+        || (side !== 0 && curves.some((curve) => curveDistance(move, curve) < Math.abs(radius) - 2 * EPS)))) {
+        return fail(`${label} crosses the toolpath or gouges the contour. Shorten it or set it to zero.`);
+      }
+    }
+
+    const cut: ContourCurve[] = [];
+    for (const curve of [...entry, ...ordered, ...exit]) {
+      const previous = cut.at(-1);
+      if (previous) {
+        const a = contourPoint(previous, 1), b = contourPoint(curve, 0);
+        // The contour join tolerance is larger than the motion continuity tolerance.
+        // Emit the short feed move explicitly so both adjoining curves keep their geometry.
+        if (!near(a, b, CAM_LENGTH_TOLERANCE)) {
+          if (!near(a, b)) return fail("The compensated edges do not meet within the contour tolerance.");
+          const connector: Line = { kind: "line", a, b };
+          if (side !== 0 && curves.some((edge) => curveDistance(connector, edge) < Math.abs(radius) - 2 * EPS)) {
+            return fail("The offset crosses itself or cuts into another part of the contour. Use a smaller cutter or change sides.");
+          }
+          cut.push(connector);
+        }
+      }
+      cut.push(curve);
+    }
+    return { ok: true, value: { center: center.value, lengths, total, seamCurve, t, ordered, cut } } as const;
+  }
+
+  const cuts: ContourCurve[][] = [];
+  for (let i = 0; i < roughCount; i++) {
+    const allowance = stock - i * increment;
+    const pass = planPass(allowance);
+    if (!pass.ok) return fail(`Radial pass at ${allowance.toPrecision(8)} mm allowance. ${pass.errors.join(" ")}`);
+    cuts.push(pass.value.cut);
+  }
+  const finish = planPass(finishStock);
+  if (!finish.ok) return finish;
+  const { center, lengths, total, seamCurve, t, ordered, cut } = finish.value;
+  cuts.push(cut);
+  const first = ordered[0]!, last = ordered.at(-1)!;
+  const clearance = Number(settings.clearance);
+  const programmed = travel.reversed ? curves.slice().reverse().map(reverse) : curves;
+  const stayDown = settings.optimiseRetracts ? cuts.map((next, index) => {
+    const previous = cuts[index - 1];
+    if (!previous) return;
+    const a = contourPoint(previous.at(-1)!, 1), b = contourPoint(next[0]!, 0);
+    const distance = length(sub(b, a));
+    if (distance <= CAM_LENGTH_TOLERANCE || distance > diameter) return;
+    const allowance = index === cuts.length - 1 ? finishStock : stock - index * increment;
+    const required = diameter / 2 + allowance;
+    const link: Line = { kind: "line", a, b };
+    if (curves.some((edge) => curveDistance(link, edge) < required - 2 * EPS)) return;
+    return []; // The direct route needs no intermediate points.
+  }) : undefined;
+  const preview = buildPlanarPreview([programmed], ordered, cuts, sketch, setup, depths.value, clearance, undefined, stayDown, outputFrame);
+  if (!preview.ok) return preview;
+  const depth = depths.value.at(-1)!;
+  const at = (p: ContourPoint, z = depth) => transformCamVector([p[0], p[1], z], sketch, CAM_WORLD, "point");
+  const planar = (p: CamVector): ContourPoint => {
+    const [x, y] = transformCamVector(p, CAM_WORLD, sketch, "point");
+    return [x, y];
+  };
+  const contourHandles: ContourEditHandle[] = [];
+  if (closed) {
+    const point = contourPoint(seamCurve, t);
+    contourHandles.push({
+      key: "seam", position: at(point), normal: sketch.z, traceFrom: at(point, clearance),
+      project(world) {
+        const p = planar(world);
+        let best = Infinity, along = 0, selected = point, fraction = 0;
+        for (const [i, curve] of center.entries()) {
+          const u = parameter(curve, p);
+          // Outside an arc's angular range the closer of its endpoints wins.
+          for (const candidate of [0, 1, Math.max(0, Math.min(1, u))]) {
+            const q = contourPoint(curve, candidate);
+            const error = length(sub(p, q));
+            if (error >= best) continue;
+            best = error;
+            selected = q;
+            fraction = (along + lengths[i]! * candidate) / total;
+          }
+          along += lengths[i]!;
+        }
+        return { value: fraction === 1 ? 0 : fraction, position: at(selected), traceFrom: at(selected, clearance) };
+      },
+    });
+  } else {
+    for (const [key, curve, u, extension] of [
+      ["leadIn", first, 0, leadIn], ["leadOut", last, 1, leadOut],
+    ] as const) {
+      const endpoint = contourPoint(curve, u);
+      const direction = scale(tangent(curve, u), u === 0 ? -1 : 1);
+      const traceFrom = at(endpoint);
+      contourHandles.push({
+        key, position: at(add(endpoint, scale(direction, extension))), normal: sketch.z, traceFrom,
+        project(world) {
+          const projected = dot2(sub(planar(world), endpoint), direction);
+          const value = projected > EPS ? projected : 0;
+          return { value, position: at(add(endpoint, scale(direction, value))), traceFrom };
+        },
+      });
+    }
+  }
+  const stayDownLinkCount = stayDown && stayDown.filter(Boolean).length * depths.value.length;
+  return { ok: true, value: { ...preview.value, contourHandles, stayDownLinkCount } };
 }
 
 export interface HelixEntry {
@@ -372,7 +570,7 @@ export function buildPlanarPreview(
         : { ...motion, ...endpoints, center: outputPoint(motion.center), normal: outputAxis });
     }
   }
-  function link(start: CamVector, end: CamVector, mode: "feed" | "plunge" | "rapid") {
+  function link(start: CamVector, end: CamVector, mode: "feed" | "plunge" | "rapid" | "link") {
     const delta = end.map((v, i) => v - start[i]!);
     const span = Math.hypot(...delta);
     if (span <= CAM_LENGTH_TOLERANCE && start[2] === end[2]) return;
@@ -399,7 +597,7 @@ export function buildPlanarPreview(
       if (i > 0 && route) {
         let from = previous!;
         for (const to of [...route, start]) {
-          link(at(from, height), at(to, height), "feed");
+          link(at(from, height), at(to, height), "link");
           from = to;
         }
       } else {

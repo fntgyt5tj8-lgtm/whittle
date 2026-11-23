@@ -4,6 +4,8 @@ export interface CameraState {
   distance: number;
   theta: number;
   phi: number;
+  /** Camera quaternion in XYZW order. Older views store only angles. */
+  orientation?: [number, number, number, number];
 }
 
 export const viewportRef: {

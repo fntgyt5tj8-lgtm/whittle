@@ -5,6 +5,7 @@
  * starts from what the user sees.
  */
 import type { Draft } from "immer";
+import { projectModelEdges } from "./projectModelEdges";
 import {
   type SketchConstraint,
   constraintLabel,
@@ -32,7 +33,6 @@ import {
   type SketchEntity,
   addEntityGeometry,
   addPoint,
-  addProjectedPolyline,
   addSpline,
   circularPattern,
   linearPattern,
@@ -865,27 +865,9 @@ export function projectPick(pk: Pick | null) {
   const body = s.regen?.bodies.find((b) => b.id === pk.bodyId);
   if (!body) return;
   const edges = pk.kind === "edge" ? [pk.index] : body.faceEdges[pk.index] ?? [];
-  const local = (x: number, y: number, z: number): Vec2 => {
-    const d = [x - frame.origin[0], y - frame.origin[1], z - frame.origin[2]];
-    return [d[0]! * frame.xDir[0] + d[1]! * frame.xDir[1] + d[2]! * frame.xDir[2], d[0]! * frame.yDir[0] + d[1]! * frame.yDir[1] + d[2]! * frame.yDir[2]];
-  };
-  const lines: Vec2[][] = [];
-  for (const ei of edges) {
-    const first = body.edgeRanges[ei * 2]!;
-    const count = body.edgeRanges[ei * 2 + 1]!;
-    const v = body.edgePositions;
-    const pts: Vec2[] = [];
-    for (let k = 0; k + 1 < count; k += 2) {
-      const a = (first + k) * 3;
-      const b = (first + k + 1) * 3;
-      if (!pts.length) pts.push(local(v[a]!, v[a + 1]!, v[a + 2]!));
-      pts.push(local(v[b]!, v[b + 1]!, v[b + 2]!));
-    }
-    lines.push(pts);
-  }
   let made = 0;
   geoMutate("Project", (sk) => {
-    for (const pts of lines) if (addProjectedPolyline(sk, pts)) made++;
+    made = projectModelEdges(sk, body, edges, frame);
   });
   if (!made) toast("info", "That edge points straight at the sketch plane, so it projects to a point.");
 }

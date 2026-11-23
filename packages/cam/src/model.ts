@@ -81,8 +81,32 @@ export interface PocketMillingSettings extends MillingDepthSettings {
 export interface ContourMillingSettings extends MillingDepthSettings {
   readonly side: "center" | "left" | "right";
   readonly direction: "forward" | "reverse";
+  readonly millingDirection?: "manual" | "climb" | "conventional";
+  /** Viewed from the spindle toward the work, along the tool axis. */
+  readonly spindleDirection?: "cw" | "ccw";
   readonly leadIn?: string;
   readonly leadOut?: string;
+  /** Tangent arc sweep in degrees. */
+  readonly arcLeadIn?: string;
+  readonly arcLeadOut?: string;
+  /** Arc radius in millimetres. Blank uses the cutter radius. */
+  readonly arcLeadInRadius?: string;
+  readonly arcLeadOutRadius?: string;
+  /** Straight lead perpendicular to the contour tangent, in millimetres. */
+  readonly normalLeadIn?: string;
+  readonly normalLeadOut?: string;
+  /** Fraction of the compensated closed contour's length in travel order. */
+  readonly seam?: string;
+  /** Emit APT cutter compensation commands for an already offset path and a machine radius of zero. */
+  readonly aptCutcom?: boolean;
+  /** Radial stock to leave on the first pass, in millimetres. */
+  readonly stockAllowance?: string;
+  /** Maximum radial change between passes. Zero or blank gives a single radial pass. */
+  readonly radialIncrement?: string;
+  /** Radial stock to leave on the last pass when using a radial increment. */
+  readonly finishAllowance?: string;
+  /** Use checked same-depth feed links between nearby radial passes. */
+  readonly optimiseRetracts?: boolean;
 }
 
 export interface CamGeometryAnchor {
@@ -118,6 +142,7 @@ export type CamOrientationSource =
 export type CamOrientation = CamOrientationSource & { readonly flip?: boolean };
 
 export interface CamProcess {
+  readonly suppressed?: boolean;
   /** Absence preserves the original machining behavior of older projects. */
   readonly orientation?: CamOrientation;
   readonly cuttingConditions?: CamCuttingConditions;
@@ -195,6 +220,8 @@ export interface CamProject {
   readonly processes: readonly CamProcess[];
   /** Part history in planning order. Execution dependencies are independent of this order. */
   readonly processPlan?: readonly CamPlanItem[];
+  /** Number of plan entries before the rollback marker. Absence means the end. */
+  readonly planRollback?: number;
   readonly toolPositions?: readonly CamToolPosition[];
   /** Reserved metadata from earlier CAM documents. */
   readonly tooling?: Readonly<Record<string, unknown>>;

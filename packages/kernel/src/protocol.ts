@@ -20,6 +20,8 @@ export interface EdgeInfo {
   length: number;
   /** Circles and arcs only. */
   radius?: number;
+  /** Analytic circle supporting a circular edge. */
+  circle?: { center: Vec3; normal: Vec3; radius: number };
   /** Start and end points (equal for closed edges). */
   ends?: [Vec3, Vec3];
   /** Unit tangents at the start and end, for chaining edges that continue smoothly into each other. */

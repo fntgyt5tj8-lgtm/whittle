@@ -15,8 +15,9 @@ const cuttingConditions = [
   ["spindleRpm", "Spindle speed (rpm)"],
 ] as const;
 
-export function ProfileExport({ name, resolve, settings = {}, onChange, resolveFrame, resolveOrientation, validateReferences, hasContour, hasTool, toolDiameter }: {
+export function ProfileExport({ name, operationActive, resolve, settings = {}, onChange, resolveFrame, resolveOrientation, validateReferences, hasContour, hasTool, toolDiameter }: {
   name: string;
+  operationActive: boolean;
   hasContour: boolean;
   hasTool: boolean;
   toolDiameter?: number;
@@ -32,6 +33,7 @@ export function ProfileExport({ name, resolve, settings = {}, onChange, resolveF
 
   function download(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!operationActive) return;
     const path = buildCircularProfile(resolve(), resolveFrame(), toolDiameter, settings, resolveOrientation, validateReferences);
     const apt = path.ok ? exportAptCl(path.value) : path;
     if (!apt.ok) {
@@ -70,7 +72,7 @@ export function ProfileExport({ name, resolve, settings = {}, onChange, resolveF
           </div>
         ))}
       </dl>
-      {hasContour && <div className="cam-properties__actions"><button type="submit" disabled={!geometryAvailable}>Export APT-CL</button></div>}
+      {hasContour && <div className="cam-properties__actions"><button type="submit" disabled={!geometryAvailable || !operationActive}>Export APT-CL</button></div>}
       {errors.length > 0 && <ul role="alert">{errors.map((error) => <li key={error}>{error}</li>)}</ul>}
     </form>
   );
