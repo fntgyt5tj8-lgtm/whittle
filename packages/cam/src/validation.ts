@@ -6,10 +6,11 @@ export function validateOperationTooling(process: CamProcess, tools: readonly Ca
   if (process.toolPositionId !== undefined && !tools.some((tool) => tool.id === process.toolPositionId)) {
     errors.push(`${process.name} references a missing tool position (${process.toolPositionId}).`);
   }
+  const conditions = process.cuttingConditions ?? process.profile;
   for (const [label, value] of [
-    ["cut feed", process.profile?.feed],
-    ["plunge feed", process.profile?.plungeFeed],
-    ["spindle speed", process.profile?.spindleRpm],
+    ["cut feed", conditions?.feed],
+    ["plunge feed", conditions?.plungeFeed],
+    ["spindle speed", conditions?.spindleRpm],
   ]) {
     if (value !== undefined && value.trim() && (!Number.isFinite(Number(value)) || Number(value) <= 0)) {
       errors.push(`${process.name} needs a positive ${label}.`);
@@ -97,6 +98,10 @@ export function isCamProject(value: unknown): value is CamProject {
     && vector(item.tangent) && typeof item.curve === "string" && positive(item.length);
   const floor = (item: unknown) => record(item) && typeof item.bodyId === "string" && anchor(item.anchor) && vector(item.center)
     && vector(item.normal) && item.surface === "PLANE" && positive(item.area);
+  const orientation = (item: unknown) => record(item) && (item.flip === undefined || typeof item.flip === "boolean")
+    && (item.kind === "setup" || item.kind === "sketch" || (typeof item.documentId === "string" && !!item.documentId.trim()
+      && (item.kind === "face" ? floor(item.face) : (item.kind === "plane" || item.kind === "csys")
+        && typeof item.entityId === "string" && !!item.entityId.trim())));
   const context = (item: unknown) => record(item) && typeof item.id === "string" && typeof item.name === "string"
     && record(item.frame) && (item.frame.kind === "legacy-world"
       || (item.frame.kind === "legacy-sketch" && (item.frame.sketch === undefined || geometry(item.frame.sketch)))
@@ -159,20 +164,34 @@ export function isCamProject(value: unknown): value is CamProject {
       && typeof item.id === "string" && typeof item.name === "string" && typeof item.setupId === "string"
       && (item.contextId === undefined || typeof item.contextId === "string")
       && (item.toolPositionId === undefined || (typeof item.toolPositionId === "string" && !!item.toolPositionId.trim()))
-      && (item.kind === "profile" || item.kind === "pocket" || item.kind === "adaptive") && (item.contour === undefined || geometry(item.contour))
+      && (item.kind === "profile" || item.kind === "pocket" || item.kind === "adaptive" || item.kind === "facing") && (item.contour === undefined || geometry(item.contour))
       && [item.boundaryEdges, item.islandEdges].every((refs) => refs === undefined
         || (Array.isArray(refs) && refs.length <= 500 && refs.every(edge)))
-      && (item.floorFace === undefined || floor(item.floorFace))
+      && (item.floorFace === undefined || (item.kind !== "facing" && floor(item.floorFace)))
+      && (item.facingFace === undefined || (item.kind === "facing" && floor(item.facingFace)
+        && item.contour === undefined && item.boundaryEdges === undefined))
+      && (item.kind === "facing" ? (item.profile === undefined && item.contourMilling === undefined
+        && item.islandSketches === undefined && item.islandEdges === undefined
+        && record(item.facingMilling)
+        && (item.facingMilling.strategy === "zigzag" || item.facingMilling.strategy === "one-way")
+        && [item.facingMilling.top, item.facingMilling.depth, item.facingMilling.clearance, item.facingMilling.stepover]
+          .every((value) => typeof value === "string")
+        && (item.facingMilling.stepdown === undefined || typeof item.facingMilling.stepdown === "string"))
+        : item.facingMilling === undefined)
+      && (item.orientation === undefined || orientation(item.orientation))
       && (item.islandSketches === undefined || (item.kind !== "profile" && Array.isArray(item.islandSketches)
         && item.islandSketches.every((ref) => geometry(ref) && record(ref) && ref.kind === "sketch")))
       && (item.profile === undefined || profile(item.profile))
+      && (item.cuttingConditions === undefined || (record(item.cuttingConditions)
+        && [item.cuttingConditions.feed, item.cuttingConditions.plungeFeed, item.cuttingConditions.spindleRpm]
+          .every((value) => value === undefined || typeof value === "string")))
       && (item.contourMilling === undefined || (record(item.contourMilling)
         && (item.contourMilling.side === "center" || item.contourMilling.side === "left" || item.contourMilling.side === "right")
         && (item.contourMilling.direction === "forward" || item.contourMilling.direction === "reverse")
         && typeof item.contourMilling.depth === "string" && typeof item.contourMilling.clearance === "string"
         && [item.contourMilling.stepdown, item.contourMilling.leadIn, item.contourMilling.leadOut]
           .every((value) => value === undefined || typeof value === "string")))
-      && (item.kind !== "profile" ? (item.profile === undefined && item.contourMilling === undefined && record(item.pocketMilling)
+      && ((item.kind === "pocket" || item.kind === "adaptive") ? (item.profile === undefined && item.contourMilling === undefined && record(item.pocketMilling)
         && typeof item.pocketMilling.depth === "string" && typeof item.pocketMilling.clearance === "string"
         && typeof item.pocketMilling.stepover === "string"
         && (item.pocketMilling.stepdown === undefined || typeof item.pocketMilling.stepdown === "string")

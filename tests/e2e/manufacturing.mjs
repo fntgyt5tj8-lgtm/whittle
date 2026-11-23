@@ -284,6 +284,9 @@ try {
   await contextPicker.selectOption({ label: "Sub Vertical" });
   const verticalApt = await exportProfile();
   assertCoordinates(verticalApt, "FROM", [12, 15, -3, 0, 1, 0]);
+  assertCoordinates(verticalApt, "CIRCLE", [2, 8, -3, 0, 1, 0, 10]);
+  const firstArcEnd = verticalApt.match(/^CIRCLE\/[^\n]*\n(GOTO\/[^\n]*)/m)?.[1];
+  assertCoordinates(firstArcEnd ?? "", "GOTO", [2, 8, -13, 0, 1, 0]);
   assert.equal([...verticalApt.matchAll(/^CIRCLE\//gm)].length, 4);
   await contextPicker.selectOption({ label: "Sub Horizontal" });
   const datumApt = await exportProfile();

@@ -79,6 +79,8 @@ export function copyLegacyManufacturing(source: WhittleDocument, documentId = ui
     processes: project.processes.map((process) => ({
       ...process, contour: process.contour && rebase(process.contour),
       islandSketches: process.islandSketches?.map(rebase),
+      orientation: process.orientation && (process.orientation.kind === "setup" || process.orientation.kind === "sketch"
+        ? process.orientation : rebase(process.orientation)),
     })),
   };
   return doc;

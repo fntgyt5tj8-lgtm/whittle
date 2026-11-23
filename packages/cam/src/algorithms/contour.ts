@@ -1,4 +1,4 @@
-import { CAM_WORLD, dot, isCamFrame, transformCamVector, type CamFrame, type CamVector } from "../geometry/frames";
+import { CAM_WORLD, dot, isCamFrame, transformCamVector, unit as unitVector, type CamFrame, type CamVector } from "../geometry/frames";
 import { CAM_LENGTH_TOLERANCE } from "../toolpath/validation";
 import type { CamMotion } from "../toolpath/model";
 import type { CamResult, ContourMillingSettings, MillingDepthSettings } from "../model";
@@ -258,7 +258,10 @@ export interface ContourPreview {
   /** Neutral motions in the setup coordinate system. */
   readonly motions: readonly CamMotion[];
   readonly length: number;
+  /** Reference frame for neutral motion coordinates. */
   readonly frame: CamFrame;
+  /** Physical TIP orientation in world coordinates. */
+  readonly toolFrame: CamFrame;
   pointAt(progress: number): CamVector;
 }
 
@@ -284,7 +287,7 @@ export function planMillingDepths(
 
 export function generateContour(
   input: readonly ContourCurve[], sketch: CamFrame, setup: CamFrame,
-  settings: ContourMillingSettings, diameter: number,
+  settings: ContourMillingSettings, diameter: number, outputFrame = setup,
 ): CamResult<ContourPreview> {
   const depths = planMillingDepths(sketch, setup, settings, diameter);
   if (!depths.ok) return depths;
@@ -311,7 +314,7 @@ export function generateContour(
   }
 
   const cut = [...(entry ? [entry] : []), ...center.value, ...(exit ? [exit] : [])];
-  return buildPlanarPreview([curves], center.value, [cut], sketch, setup, depths.value, Number(settings.clearance));
+  return buildPlanarPreview([curves], center.value, [cut], sketch, setup, depths.value, Number(settings.clearance), undefined, undefined, outputFrame);
 }
 
 export interface HelixEntry {
@@ -323,11 +326,16 @@ export interface HelixEntry {
 
 export function buildPlanarPreview(
   boundaries: readonly (readonly ContourCurve[])[], centerline: readonly ContourCurve[], cuts: readonly (readonly ContourCurve[])[],
-  sketch: CamFrame, setup: CamFrame, depths: readonly number[], clearance: number, entries?: readonly (HelixEntry | undefined)[], stayDown?: readonly (readonly ContourPoint[] | undefined)[],
+  sketch: CamFrame, setup: CamFrame, depths: readonly number[], clearance: number, entries?: readonly (HelixEntry | undefined)[],
+  stayDown?: readonly (readonly ContourPoint[] | undefined)[], outputFrame = setup,
 ): CamResult<ContourPreview> {
-  const sketchZ = transformCamVector([0, 0, 0], sketch, setup, "point")[2];
+  if (!isCamFrame(outputFrame)) return fail("The output coordinate system is invalid.");
+  const outputPoint = (point: CamVector) => transformCamVector(point, setup, outputFrame, "point");
+  const outputAxis = unitVector(transformCamVector(CAM_WORLD.z, setup, outputFrame, "direction"));
+  const sketchZ = sketch === setup ? 0 : transformCamVector(CAM_WORLD.origin, sketch, setup, "point")[2];
   const toolAxis = CAM_WORLD.z;
   function at(p: ContourPoint, height: number): CamVector {
+    if (sketch === setup) return [p[0], p[1], height];
     const [x, y] = transformCamVector([p[0], p[1], 0], sketch, setup, "point");
     return [x, y, sketchZ + height];
   }
@@ -356,7 +364,13 @@ export function buildPlanarPreview(
     const start = travel;
     travel += length;
     segments.push({ start, end: travel, length, point });
-    motions.push(motion);
+    if (outputFrame === setup) {
+      motions.push(motion);
+    } else {
+      const endpoints = { start: outputPoint(motion.start), end: outputPoint(motion.end), toolAxis: outputAxis };
+      motions.push(motion.kind === "line" ? { ...motion, ...endpoints }
+        : { ...motion, ...endpoints, center: outputPoint(motion.center), normal: outputAxis });
+    }
   }
   function link(start: CamVector, end: CamVector, mode: "feed" | "plunge" | "rapid") {
     const delta = end.map((v, i) => v - start[i]!);
@@ -442,7 +456,7 @@ export function buildPlanarPreview(
     ok: true, value: {
       programmed: programmedPaths[0]!, programmedPaths,
       centerline: cuts.length === 1 && centerline === cuts[0] ? cuttingPasses.at(-1)! : sample(centerline, depths.at(-1)!),
-      cuttingPasses, entryPaths, linkingMoves, motions, length: travel, frame: setup,
+      cuttingPasses, entryPaths, linkingMoves, motions, length: travel, frame: outputFrame, toolFrame: setup,
       pointAt(progress) {
         const distance = Math.max(0, Math.min(1, progress)) * travel;
         let lo = 0, hi = segments.length - 1;

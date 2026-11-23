@@ -154,6 +154,7 @@ export interface AppState {
   camContourPlayback: CamContourPlayback | null;
   camContourProgress: number;
   isolatedToolId: Id | null;
+  camOrientationFacePicking: boolean;
   camProfileSketchPicking: boolean;
   hover: Pick | null;
   /** Edges the pointer rests on while a fillet or chamfer is open: the model previews them as if picked. */
@@ -225,6 +226,7 @@ export const useApp = create<AppState>(() => ({
   camContourPlayback: null,
   camContourProgress: 0,
   isolatedToolId: null,
+  camOrientationFacePicking: false,
   camProfileSketchPicking: false,
   hover: null,
   hoverEdges: null,
@@ -333,6 +335,7 @@ export function replaceDocument(doc: WhittleDocument, fileName: string | null, d
     camContourPlayback: null,
     camContourProgress: 0,
     isolatedToolId: null,
+    camOrientationFacePicking: false,
     camProfileSketchPicking: false,
     ribbonTab: documentKind === "cam" ? "manufacturing" : "solid",
     fileName,

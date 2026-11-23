@@ -2,6 +2,8 @@ import type { CamBoundaryEdge, CamFloorFace, CamVector, CamCuttingGeometry, CamR
 
 export interface CamCadAdapter {
   getCoordinateSystems(): readonly { readonly id: string; readonly name: string }[];
+  getDatumPlanes?(): readonly { readonly id: string; readonly name: string }[];
+  resolveDatumPlane?(id: string): CamFrame | undefined;
   resolveToolCutting?(id: string): CamResult<CamCuttingGeometry> | undefined;
   resolveCoordinateSystem(id: string): CamFrame | undefined;
   resolveSketchFrame(ref: CamGeometryRef): CamFrame | undefined;
@@ -9,6 +11,7 @@ export interface CamCadAdapter {
   resolveContour?(ref: CamGeometryRef): CamResult<readonly ContourCurve[]>;
   selectedEdges?(): readonly CamBoundaryEdge[];
   selectedFloor?(): CamFloorFace | undefined;
+  resolveFaceBoundary?(ref: CamFloorFace): readonly CamBoundaryEdge[] | undefined;
   resolveFloor?(ref: CamFloorFace): CamFloorFace | undefined;
   resolveEdge?(ref: CamBoundaryEdge): {
     curve: string; ends: readonly [CamVector, CamVector]; mid: CamVector; tangent: CamVector;

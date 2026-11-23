@@ -544,6 +544,7 @@ export function ViewportView() {
   const camContourPlayback = useApp((s) => s.camContourPlayback?.doc === s.doc
     && s.builtDoc === s.doc && s.ribbonTab === "manufacturing" && !s.session && !s.camToolSelection
     ? s.camContourPlayback : null);
+  const camOrientationFacePicking = useApp((s) => s.camOrientationFacePicking);
   const camProfileSketchPicking = useApp((s) => s.camProfileSketchPicking);
   const isolatedToolId = useApp((s) => s.isolatedToolId);
   const isolatedTool = doc.manufacturing?.toolPositions?.find((tool) => tool.id === isolatedToolId);
@@ -841,13 +842,17 @@ export function ViewportView() {
         return !source.suppressed && kind && kinds.includes(kind);
       }).map((source) => source.id))
       : undefined;
+    if (camOrientationFacePicking) {
+      vp.setPickFilter({ faces: true, edges: false, planes: false, sketches: false, datums: false });
+      return;
+    }
     if (camProfileSketchPicking) {
       vp.setPickFilter({ faces: false, edges: false, planes: false, sketches: true, sketchesOnly: true });
       return;
     }
     vp.setPickFilter({ ...filter, datumInputs, datums: !!datumInputs || mode.kind === "pickPlane" || (mode.kind === "model" && !session && priority === "all") });
     vp.setPlanesVisible(mode.kind === "pickPlane");
-  }, [vp, mode, session, sessionFeature, priority, doc.features, camProfileSketchPicking]);
+  }, [vp, mode, session, sessionFeature, priority, doc.features, camProfileSketchPicking, camOrientationFacePicking]);
 
   // A lesson that asks for one plane lights that plane while picking (audit B-2).
   const coach = useApp((s) => s.coach);

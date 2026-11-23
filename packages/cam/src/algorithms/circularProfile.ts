@@ -1,5 +1,5 @@
 import type { CircularProfileGeometry } from "../geometry/circle";
-import { isCamFrame, transformCamVector, type CamFrame, type CamVector } from "../geometry/frames";
+import { isCamFrame, transformCamVector, unit, type CamFrame, type CamVector } from "../geometry/frames";
 import type { CamResult, FlatEndmill } from "../model";
 import type { CamMotion, CamToolpath } from "../toolpath/model";
 import { CAM_LENGTH_TOLERANCE, validateToolpath } from "../toolpath/validation";
@@ -50,7 +50,7 @@ export const generateCircularProfile: CircularProfileAlgorithm = function genera
   const { center: [x, y], operationFrame } = geometry;
   const radius = geometry.radius + (side === "inside" ? -1 : 1) * tool.diameter / 2;
   const point = (v: CamVector) => transformCamVector(v, operationFrame, workpieceCsys, "point");
-  const toolAxis = transformCamVector([0, 0, 1], operationFrame, workpieceCsys, "direction");
+  const toolAxis = unit(transformCamVector([0, 0, 1], operationFrame, workpieceCsys, "direction"));
   const safe = point([x + radius, y, clearance]);
   const start = point([x + radius, y, -depth]);
   const ordinate = direction === "ccw" ? radius : -radius;

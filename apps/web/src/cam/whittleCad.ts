@@ -1,4 +1,4 @@
-import { documentEvaluator, toolForBody, toolForTip } from "@whittle/core";
+import { activeEnd, datumKind, documentEvaluator, toolForBody, toolForTip } from "@whittle/core";
 import type { CamGeometryRef } from "@whittle/cam";
 import type { CamCadAdapter } from "./cadAdapter";
 import { findFeature, useApp } from "../state/store";
@@ -11,6 +11,20 @@ export const whittleCad: CamCadAdapter = {
   getCoordinateSystems() {
     const { doc } = useApp.getState();
     return doc.features.filter((feature) => feature.type === "csys" && !toolForTip(doc, feature.id));
+  },
+
+  getDatumPlanes() {
+    const { doc } = useApp.getState();
+    return doc.features.slice(0, activeEnd(doc)).filter((feature) => datumKind(feature) === "plane");
+  },
+
+  resolveDatumPlane(id) {
+    const { doc, builtDoc, regen } = useApp.getState();
+    const feature = findFeature(doc, id);
+    if (builtDoc !== doc || !feature || datumKind(feature) !== "plane") return;
+    if (regen?.status.find((item) => item.id === id)?.state !== "ok") return;
+    const frame = regen?.planes.find((item) => item.id === id && item.kind === "plane");
+    return frame && { origin: frame.origin, x: frame.xDir, y: frame.yDir, z: frame.normal };
   },
 
   resolveToolCutting(id) {
@@ -87,9 +101,22 @@ export const whittleCad: CamCadAdapter = {
     return edge?.ends && { ...edge, ends: edge.ends };
   },
 
+  resolveFaceBoundary(ref) {
+    const { doc, builtDoc, regen } = useApp.getState();
+    if (doc !== builtDoc || !whittleCad.resolveGeometry({ documentId: doc.id!, kind: "body", entityId: ref.bodyId })) return;
+    const body = regen?.bodies.find((item) => item.id === ref.bodyId);
+    const face = body && resolveModelFloor(body, ref);
+    if (!body || !face) return;
+    const indices = body.faceEdges[body.faces.indexOf(face)];
+    if (!indices?.length) return;
+    const anchor = modelAnchor(body);
+    return indices.map((index) => ({ ...body.edges[index]!, bodyId: body.id, anchor }));
+  },
+
   resolveFloor(ref) {
     const { doc, builtDoc, regen } = useApp.getState();
     if (doc !== builtDoc) return;
+    if (!whittleCad.resolveGeometry({ documentId: doc.id!, kind: "body", entityId: ref.bodyId })) return;
     const body = regen?.bodies.find((item) => item.id === ref.bodyId);
     const face = body && resolveModelFloor(body, ref);
     return face && { ...face, bodyId: ref.bodyId, anchor: ref.anchor };

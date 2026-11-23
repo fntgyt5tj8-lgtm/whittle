@@ -18,7 +18,7 @@ export function modelEdges(cad: CamCadAdapter, refs: readonly CamBoundaryEdge[],
     const tangents = [edge.tangent, ...(edge.endTangents ?? [])].map((p) => transformCamVector(p, CAM_WORLD, frame, "direction"));
     if (Math.abs(a![2] - mid![2]) > TOLERANCE || Math.abs(b![2] - mid![2]) > TOLERANCE
       || (!project && Math.abs(mid![2]) > TOLERANCE) || tangents.some((t) => Math.abs(t[2]) > TOLERANCE)) {
-      return fail(project ? "Island edges must be horizontal in the setup." : "Boundary edges must lie on the same horizontal plane.");
+      return fail(project ? "Island edges must lie in planes perpendicular to the operation tool axis." : "Boundary edges must lie in the machining plane.");
     }
     const start: ContourPoint = [a![0], a![1]], end: ContourPoint = [b![0], b![1]], middle: [number, number] = [mid![0], mid![1]];
     if (edge.curve === "LINE") {

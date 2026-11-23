@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { chromium } from "playwright-core";
 
 const url = process.argv[2] ?? "http://localhost:5173/";
@@ -222,10 +223,34 @@ try {
     const { builtDoc, doc } = window.whittle.useApp.getState();
     return builtDoc === doc;
   });
+  async function setAptFeeds() {
+    await properties.getByLabel("Cut feed (mm/min)").fill("250");
+    await properties.getByLabel("Plunge feed (mm/min)").fill("60");
+    await waitForCamBuild();
+  }
+  async function checkApt(region, hasArcs = false) {
+    await setAptFeeds();
+    await region.getByRole("button", { name: "Generate toolpath", exact: true }).click();
+    await region.getByLabel("Playback timeline").waitFor();
+    const expected = await page.evaluate(() => {
+      const { path } = window.whittle.useApp.getState().camContourPlayback;
+      return { point: path.pointAt(0), axis: path.toolFrame.z };
+    });
+    const download = page.waitForEvent("download", { timeout: 10000 });
+    await properties.getByRole("button", { name: "Export APT-CL", exact: true }).click();
+    const apt = await readFile(await (await download).path(), "utf8");
+    const from = apt.match(/^FROM\/(.*)$/m)[1].split(",").map(Number);
+    assert.equal(from.length, 6);
+    [...expected.point, ...expected.axis].forEach((value, i) => assert.ok(Math.abs(from[i] - value) < 1e-8));
+    assert.equal(/^CIRCLE\//m.test(apt), hasArcs);
+    assert.match(apt, /^FINI$/m);
+  }
+
   await generate.click();
   await contour.getByRole("alert").getByText(/Assign a tool position/).waitFor();
   await properties.getByLabel("Tool position", { exact: true }).selectOption(tool.id);
   await contour.getByLabel("Depth (mm)").fill("1.25");
+  await checkApt(contour, true);
   const preview = () => page.evaluate(() => {
     const { path } = window.whittle.useApp.getState().camContourPlayback;
     return { start: path.centerline[0], next: path.centerline[1], programmed: path.programmed[0] };
@@ -319,6 +344,7 @@ try {
   await waitForCamBuild();
   await pocketGenerate.click();
   await pocket.getByLabel("Playback timeline").waitFor();
+  await checkApt(pocket, true);
   const pocketPath = await page.evaluate(() => {
     const { path } = window.whittle.useApp.getState().camContourPlayback;
     return { depths: path.cuttingPasses.map((pass) => pass[0][2]), boundary: path.centerline[0], motions: path.motions.length };
@@ -366,6 +392,7 @@ try {
   const adaptiveGenerate = adaptive.getByRole("button", { name: "Generate toolpath", exact: true });
   await adaptiveGenerate.click();
   await adaptive.getByLabel("Playback timeline").waitFor();
+  await checkApt(adaptive, true);
   const adaptivePath = await page.evaluate(() => {
     const { path } = window.whittle.useApp.getState().camContourPlayback;
     return { depths: path.cuttingPasses.map((pass) => pass[0][2]), boundary: path.centerline[0],
@@ -438,6 +465,8 @@ try {
   assert.ok(Math.abs(Number(await edgePocket.getByLabel("Depth (mm)").inputValue()) - (model.top - model.z)) < 1e-6);
   await edgePocket.getByRole("button", { name: "Generate toolpath" }).click();
   assert.equal(await edgePocket.getByRole("alert").count(), 0, (await edgePocket.getByRole("alert").allTextContents()).join("\n"));
+  await setAptFeeds();
+  await edgePocket.getByRole("button", { name: "Generate toolpath" }).click();
   await edgePocket.getByLabel("Playback timeline").waitFor();
   const edgePath = await page.evaluate(() => {
     const { path } = window.whittle.useApp.getState().camContourPlayback;
@@ -446,6 +475,147 @@ try {
   assert.ok(edgePath.loops >= model.inner.length + 1);
   assert.ok(Math.abs(edgePath.z - model.z) < 1e-6);
   console.log("ok  Accumulated model boundary and island edges, and selected floor depth");
+
+  await page.evaluate(() => window.whittle.api.run("add_sketch", {
+    name: "Side contour", plane: "YZ", offset: 10,
+    shapes: [{ type: "circle", x: 4, y: 6, radius: 3 }],
+  }));
+  await manufacturing.click();
+  await page.getByRole("button", { name: "Add contour milling", exact: true }).click();
+  await properties.getByRole("button", { name: /^(Pick|Replace) Sketch$/ }).click();
+  await page.getByRole("navigation", { name: "Design browser" })
+    .getByRole("button", { name: "Side contour", exact: true }).click();
+  const orientation = properties.getByLabel("Machining orientation");
+  const flipTool = properties.getByLabel("Flip tool direction");
+  await properties.getByLabel("Tool position", { exact: true }).selectOption(tool.id);
+  await contour.getByLabel("Depth (mm)").fill("1");
+  await waitForCamBuild();
+  await generate.click();
+  await contour.getByRole("alert").getByText(/perpendicular to the operation tool axis/).waitFor();
+  const sideFace = await page.evaluate((bodyId) => {
+    const { regen } = window.whittle.useApp.getState();
+    const faces = regen.bodies.find(({ id }) => id === bodyId).faces;
+    const index = faces.findIndex(({ surface, normal }) => surface === "PLANE" && Math.abs(normal[0]) > 0.999);
+    return { index, sign: Math.sign(faces[index].normal[0]), center: faces[index].center };
+  }, model.bodyId);
+  await page.evaluate((sign) => {
+    const { useApp, viewportRef } = window.whittle;
+    useApp.setState({ selection: [], pickPriority: "body" });
+    viewportRef.current.viewTo(sign > 0 ? "right" : "left");
+  }, sideFace.sign);
+  await page.waitForFunction(() => !window.whittle.viewportRef.current.anim);
+
+  await orientation.selectOption("pick-face");
+  await properties.getByRole("status").getByText("Click a flat workpiece face in the 3D view.").waitFor();
+  await page.keyboard.press("Escape");
+  assert.equal(await orientation.inputValue(), "setup");
+  await orientation.selectOption("pick-face");
+  await page.waitForFunction(() => window.whittle.viewportRef.current.filter.faces);
+  const xy = await page.evaluate((world) => {
+    const vp = window.whittle.viewportRef.current;
+    const [x, y] = vp.worldToScreen(world);
+    const bounds = document.querySelector(".viewport canvas").getBoundingClientRect();
+    return [bounds.left + x * bounds.width / vp.size.x, bounds.top + y * bounds.height / vp.size.y];
+  }, sideFace.center);
+  await page.mouse.click(...xy);
+  await page.waitForFunction(() => document.querySelector("#cam-orientation").value === "face");
+  assert.equal(await page.evaluate(() => window.whittle.useApp.getState().pickPriority), "body");
+  await page.evaluate(() => window.whittle.useApp.setState({ pickPriority: "all" }));
+  await waitForCamBuild();
+
+  async function checkSidePath(sign) {
+    await generate.click();
+    await contour.getByLabel("Playback timeline").waitFor();
+    const actual = await page.evaluate(() => {
+      const vp = window.whittle.viewportRef.current;
+      const { camContourPlayback, camContourProgress } = window.whittle.useApp.getState();
+      const { path, tip } = camContourPlayback;
+      vp.camToolGroup.updateMatrix();
+      const worldTip = vp.camToolGroup.position.clone().set(...tip.origin).applyMatrix4(vp.camToolGroup.matrix);
+      const worldAxis = worldTip.clone().set(...tip.z).transformDirection(vp.camToolGroup.matrix);
+      return {
+        axis: worldAxis.toArray(), ijk: path.motions[0].toolAxis, start: path.pointAt(0),
+        boundary: path.programmed[0][0], depth: path.centerline[0][0],
+        tipError: worldTip.distanceTo(worldTip.clone().set(...path.pointAt(camContourProgress))),
+        components: vp.camToolGroup.children.length,
+      };
+    });
+    for (const vector of [actual.axis, actual.ijk]) {
+      assert.ok(Math.hypot(vector[0] - sign, vector[1], vector[2]) < 1e-6);
+    }
+    assert.ok(Math.abs(actual.start[0] - actual.boundary - 2 * sign) < 1e-6);
+    assert.ok(Math.abs(actual.depth - actual.boundary + sign) < 1e-6);
+    assert.ok(actual.tipError < 1e-6);
+    assert.equal(actual.components, 2);
+  }
+
+  await checkSidePath(sideFace.sign);
+  await flipTool.check();
+  await waitForCamBuild();
+  await checkSidePath(-sideFace.sign);
+  await checkApt(contour, true);
+  console.log("ok  Side face machining, reversed IJK and physical TIP alignment");
+
+  await page.getByRole("button", { name: "Add facing milling", exact: true }).click();
+  const facing = properties.getByRole("region", { name: "Facing milling" });
+  await properties.getByRole("button", { name: "Pick Facing Face", exact: true }).click();
+  await page.waitForFunction(() => window.whittle.viewportRef.current.filter.faces);
+  await page.mouse.click(...xy);
+  await properties.getByText("Selected planar face", { exact: true }).waitFor();
+  await waitForCamBuild();
+  await orientation.selectOption("pick-face");
+  await page.waitForFunction(() => window.whittle.viewportRef.current.filter.faces);
+  await page.mouse.click(...xy);
+  await page.waitForFunction(() => document.querySelector("#cam-orientation").value === "face");
+  await properties.getByLabel("Tool position", { exact: true }).selectOption(tool.id);
+  await facing.getByLabel("Raster strategy").selectOption("one-way");
+  await facing.getByLabel("Top height (mm)").fill("1");
+  await facing.getByLabel("Final height (mm)").fill("0");
+  await facing.getByLabel("Maximum stepdown (mm)").fill("0.5");
+  await facing.getByLabel("Stepover (% of cutter diameter)").fill("75");
+  await waitForCamBuild();
+
+  async function checkFacingPath() {
+    await facing.getByRole("button", { name: "Generate toolpath" }).click();
+    assert.equal(await facing.getByRole("alert").count(), 0, (await facing.getByRole("alert").allTextContents()).join("\n"));
+    await facing.getByLabel("Playback timeline").waitFor();
+    const actual = await page.evaluate(() => {
+      const { viewportRef, useApp } = window.whittle;
+      const { path, tip } = useApp.getState().camContourPlayback;
+      const group = viewportRef.current.camToolGroup;
+      group.updateMatrix();
+      const worldTip = group.position.clone().set(...tip.origin).applyMatrix4(group.matrix);
+      const error = worldTip.distanceTo(worldTip.clone().set(...path.pointAt(0)));
+      const axis = path.motions[0].toolAxis;
+      const depths = [...new Set(path.motions.filter((motion) => motion.mode === "feed").map((motion) =>
+        Math.round((motion.start[0] - path.programmed[0][0]) * axis[0] * 1000) / 1000))];
+      return { axis, depths, error, meshes: group.children.length, passes: path.cuttingPasses.length };
+    });
+    assert.ok(Math.hypot(actual.axis[0] - sideFace.sign, actual.axis[1], actual.axis[2]) < 1e-6);
+    assert.deepEqual(actual.depths, [0.5, 0]);
+    assert.ok(actual.error < 1e-6);
+    assert.equal(actual.meshes, 2);
+    assert.ok(actual.passes > 2);
+  }
+
+  await checkFacingPath();
+  await checkApt(facing);
+  await facing.getByRole("button", { name: "Play", exact: true }).click();
+  await facing.getByRole("button", { name: "Pause", exact: true }).click();
+
+  await page.getByRole("list", { name: "Part history" }).getByRole("button").first().click();
+  const [setupDownload] = await Promise.all([
+    page.waitForEvent("download", { timeout: 10000 }),
+    properties.getByRole("button", { name: "Export setup APT-CL", exact: true }).click(),
+  ]).catch(async (error) => {
+    throw new Error(`Setup export failed. ${await properties.getByRole("alert").allTextContents()}`, { cause: error });
+  });
+  const setupApt = await readFile(await setupDownload.path(), "utf8");
+  assert.deepEqual([...setupApt.matchAll(/^\$\$ OPERATION (.+)$/gm)].map((match) => match[1]),
+    ["Contour 1", "Pocket 2", "Adaptive 3", "Pocket 4", "Contour 5", "Facing 6"]);
+  assert.equal([...setupApt.matchAll(/^FROM\//gm)].length, 6);
+  assert.equal([...setupApt.matchAll(/^FINI$/gm)].length, 1);
+
 
   await page.getByRole("button", { name: "Save CAM", exact: true }).click();
   await page.waitForFunction(() => !window.whittle.useApp.getState().dirty);
@@ -466,6 +636,17 @@ try {
   assert.equal(await page.evaluate((id) => window.whittle.useApp.getState().regen.planes.find((frame) => frame.id === id)?.origin[0], tool.tipCsysId), 25);
   assert.deepEqual((await toolModel()).components, tool.components);
   await manufacturing.click();
+  await page.getByRole("button", { name: "Facing 6 · Main machining", exact: true }).click();
+  assert.equal(await facing.getByLabel("Raster strategy").inputValue(), "one-way");
+  assert.equal(await properties.getByLabel("Cut feed (mm/min)").inputValue(), "250");
+  assert.equal(await facing.getByLabel("Top height (mm)").inputValue(), "1");
+  assert.equal(await facing.getByLabel("Stepover (% of cutter diameter)").inputValue(), "75");
+  await checkFacingPath();
+  console.log("ok  Facing side face selection, one-way raster, multibody TIP and CAM round trip");
+  await page.getByRole("button", { name: "Contour 5 · Main machining", exact: true }).click();
+  assert.equal(await orientation.inputValue(), "face");
+  assert.equal(await flipTool.isChecked(), true);
+  await checkSidePath(-sideFace.sign);
   await page.getByRole("button", { name: "Contour 1 · Main machining", exact: true }).click();
   assert.equal(await side.inputValue(), "left");
   assert.equal(await direction.inputValue(), "reverse");

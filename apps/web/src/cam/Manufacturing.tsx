@@ -40,9 +40,9 @@ export function ManufacturingSlots({ enabled, children }: { enabled: boolean; ch
     saveProject, openProperties, sourceErrors, active && !editing && !toolSelection,
     () => useApp.setState({ selection: [], hover: null, camBrowserTab: "browser" }));
   useEffect(() => {
-    useApp.setState({ camProfileSketchPicking: cam.pickingSketch });
-    return () => useApp.setState({ camProfileSketchPicking: false });
-  }, [cam.pickingSketch]);
+    useApp.setState({ camProfileSketchPicking: cam.pickingSketch, camOrientationFacePicking: cam.pickingFace });
+    return () => useApp.setState({ camProfileSketchPicking: false, camOrientationFacePicking: false });
+  }, [cam.pickingSketch, cam.pickingFace]);
   const ribbon = enabled ? {
     label: manufacturingLabel,
     activate: () => useApp.setState({ ribbonTab: "manufacturing", ...(isNarrow() ? { panelOpen: false } : {}) }),
@@ -57,7 +57,7 @@ export function ManufacturingSlots({ enabled, children }: { enabled: boolean; ch
         </div>
         {isCam && <div className="toolgroup" role="group" aria-label="CAM geometry">
           <div className="toolgroup__tools">
-            {["parts", "import", "move", "csys", "sketch", "verify-cad-source"].map((id) => <ToolButton key={id} c={commandById(id)} />)}
+            {["parts", "import", "move", "plane", "csys", "sketch", "verify-cad-source"].map((id) => <ToolButton key={id} c={commandById(id)} />)}
           </div>
           <span className="toolgroup__label">CAM geometry</span>
         </div>}

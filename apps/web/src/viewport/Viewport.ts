@@ -945,7 +945,7 @@ export class Viewport {
     const basis = (frame: typeof tip) => new THREE.Matrix4().makeBasis(
       new THREE.Vector3(...frame.x), new THREE.Vector3(...frame.y), new THREE.Vector3(...frame.z),
     );
-    const rotation = basis(path.frame).multiply(basis(tip).transpose());
+    const rotation = basis(path.toolFrame).multiply(basis(tip).transpose());
     this.camToolGroup.quaternion.setFromRotationMatrix(rotation);
     this.camTipOrigin.set(...tip.origin).applyMatrix4(rotation);
     this.setCamContourProgress(0);

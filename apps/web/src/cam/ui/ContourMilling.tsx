@@ -1,25 +1,24 @@
 import { Fragment, useEffect, useState } from "react";
-import {
-  CAM_WORLD, generateAdaptive, generateContour, generatePocket, isCamFrame, pocketBoundaries, transformCamVector, type CamBoundaryEdge, type ContourCurve, type ContourPoint, type CamFrame, type CamProcess, type CamToolPosition, type ContourMillingSettings, type PocketMillingSettings,
-} from "@whittle/cam";
+import type { CamBoundaryEdge, CamFrame, CamProcess, CamToolPosition, ContourMillingSettings, FacingMillingSettings, PocketMillingSettings } from "@whittle/cam";
 import { type CamContourPlayback, useApp } from "../../state/store";
-import { modelEdges } from "../modelEdges";
+import { generateMilling, millingGeometry } from "../milling";
 import type { CamCadAdapter } from "../cadAdapter";
 
 interface Props {
   cad: CamCadAdapter;
   process: CamProcess;
-  settings: ContourMillingSettings | PocketMillingSettings;
+  settings: ContourMillingSettings | PocketMillingSettings | FacingMillingSettings;
   tool?: CamToolPosition;
   resolveFrame(): CamFrame | undefined;
   validateReferences(): string[];
-  onGeometryChange(changes: Pick<Partial<CamProcess>, "boundaryEdges" | "islandEdges" | "floorFace">): void;
-  onChange(settings: Partial<ContourMillingSettings & PocketMillingSettings>): void;
+  onGeometryChange(changes: Pick<Partial<CamProcess>, "boundaryEdges" | "islandEdges" | "floorFace" | "facingFace" | "contour">): void;
+  onChange(settings: Partial<ContourMillingSettings & PocketMillingSettings & FacingMillingSettings>): void;
 }
 
 export function ContourMilling({ cad, process, settings, tool, resolveFrame, validateReferences, onChange, onGeometryChange }: Props) {
   const adaptive = process.kind === "adaptive";
-  const label = adaptive ? "Adaptive clearing" : "stepover" in settings ? "Pocket milling" : "Contour milling";
+  const facing = "strategy" in settings;
+  const label = facing ? "Facing milling" : adaptive ? "Adaptive clearing" : "stepover" in settings ? "Pocket milling" : "Contour milling";
   const doc = useApp((s) => s.doc);
   const [attempt, setAttempt] = useState<{ doc: typeof doc; errors: readonly string[] }>();
   const playback = useApp((s) => s.camContourPlayback?.doc === s.doc ? s.camContourPlayback : null);
@@ -52,99 +51,28 @@ export function ContourMilling({ cad, process, settings, tool, resolveFrame, val
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [playing, playback?.path]);
 
-  const setup = resolveFrame();
-  const firstEdge = process.boundaryEdges?.[0];
-  const firstEdgeGeometry = firstEdge && cad.resolveEdge?.(firstEdge);
-  const sketch = firstEdge
-    ? setup && firstEdgeGeometry && { ...setup, origin: firstEdgeGeometry.mid }
-    : process.contour && cad.resolveSketchFrame(process.contour);
+  const { firstEdge, floorDepth } = millingGeometry(cad, doc.id, process, resolveFrame());
   const selectedEdges = cad.selectedEdges?.() ?? [];
   const selectedFloor = cad.selectedFloor?.();
-  const floor = process.floorFace && cad.resolveFloor?.(process.floorFace);
   function addEdges(kind: "boundaryEdges" | "islandEdges") {
     const edges: CamBoundaryEdge[] = [...(process[kind] ?? [])];
     for (const edge of selectedEdges) {
       if (!edges.some((saved) => saved.bodyId === edge.bodyId && saved.length === edge.length
         && saved.curve === edge.curve && saved.mid.every((v, i) => v === edge.mid[i]))) edges.push(edge);
     }
-    onGeometryChange({ [kind]: edges });
+    onGeometryChange(facing ? { boundaryEdges: edges, facingFace: undefined, contour: undefined } : { [kind]: edges });
   }
-  const floorDepth = floor && sketch && (() => {
-    const normal = transformCamVector(floor.normal, CAM_WORLD, sketch, "direction");
-    if (Math.abs(normal[2]) < 1 - 1e-8) return;
-    const depth = -transformCamVector(floor.center, CAM_WORLD, sketch, "point")[2];
-    return depth > 1e-5 ? depth : undefined;
-  })();
-
   function generate() {
     setPlaying(false);
     seek(0);
-    const fail = (errors: readonly string[]) => {
+    const generated = generateMilling(cad, doc.id, process, settings, tool, resolveFrame(), validateReferences());
+    if (!generated.ok) {
       useApp.setState({ camContourPlayback: null });
-      setAttempt({ doc, errors });
-    };
-    const errors = validateReferences();
-    if (errors.length) return fail(errors);
-    if (!process.contour && !firstEdge) return fail(["Pick a sketch or add model boundary edges."]);
-    if (!tool) return fail(["Assign a tool position to this operation."]);
-    const cutting = cad.resolveToolCutting?.(tool.id);
-    if (!cutting?.ok) return fail(cutting?.errors ?? ["The pinned cutting component is unavailable or still updating."]);
-    if (cutting.value.family !== "FLAT") return fail([`${label} requires an inherited FLAT cutter TYPE.`]);
-    const tip = cad.resolveCoordinateSystem(tool.tipCsysId);
-    if (!tip || !isCamFrame(tip)) return fail(["Resolve the assigned tool's master TIP."]);
-    const ids = tool.components.map((component) => component.bodyId);
-    if (!ids.length || !cad.resolveToolBodies?.(ids)) return fail(["One or more physical tool components are missing or failed to build."]);
-    if (!sketch || !setup || !isCamFrame(sketch)) return fail(["Resolve the boundary plane and workpiece coordinate system."]);
-    if (process.floorFace && floorDepth === undefined) {
-      return fail(["The floor must be available, parallel to the boundary, and below it."]);
+      setAttempt({ doc, errors: generated.errors });
+      return;
     }
-    const contour = firstEdge ? modelEdges(cad, process.boundaryEdges!, sketch, false)
-      : cad.resolveContour?.(process.contour!);
-    if (!contour?.ok) return fail(contour?.errors ?? ["The selected sketch is unavailable."]);
-    if ("stepover" in settings) {
-      const boundary = pocketBoundaries(contour.value);
-      const name = firstEdge ? "Boundary edges" : cad.resolveGeometry(process.contour!)?.name ?? "Pocket boundary sketch";
-      if (!boundary.ok) return fail(boundary.errors.map((error) => `${name} · ${error}`));
-    }
-    const islands: ContourCurve[] = [];
-    for (const ref of process.islandSketches ?? []) {
-      const name = cad.resolveGeometry(ref)?.name ?? "Island sketch";
-      const geometry = cad.resolveContour?.(ref);
-      const frame = cad.resolveSketchFrame(ref);
-      if (!frame || !isCamFrame(frame) || !geometry?.ok || !geometry.value.length) {
-        return fail([`${name} needs available closed sketch geometry.`, ...(geometry && !geometry.ok ? geometry.errors : [])]);
-      }
-      const island = pocketBoundaries(geometry.value);
-      if (!island.ok) return fail(island.errors.map((error) => `${name} · ${error}`));
-      const normal = transformCamVector(frame.z, CAM_WORLD, sketch, "direction");
-      if (Math.abs(normal[2]) < 1 - 1e-10) return fail([`${name} must be parallel to the pocket boundary sketch.`]);
-      const project = ([x, y]: ContourPoint): ContourPoint => {
-        const [u, v] = transformCamVector([x, y, 0], frame, sketch, "point");
-        return [u, v];
-      };
-      for (const curve of island.value.flat()) {
-        if (curve.kind === "line") {
-          islands.push({ kind: "line", a: project(curve.a), b: project(curve.b) });
-        } else {
-          const [u, v] = transformCamVector([Math.cos(curve.start), Math.sin(curve.start), 0], frame, sketch, "direction");
-          islands.push({ ...curve, c: project(curve.c), start: Math.atan2(v, u), sweep: curve.sweep * Math.sign(normal[2]) });
-        }
-      }
-    }
-    if (process.islandEdges?.length) {
-      const edges = modelEdges(cad, process.islandEdges, sketch, true);
-      if (!edges.ok) return fail(edges.errors);
-      const loops = pocketBoundaries(edges.value);
-      if (!loops.ok) return fail(loops.errors.map((error) => `Island edges · ${error}`));
-      islands.push(...loops.value.flat());
-    }
-    const effective = floorDepth === undefined ? settings : { ...settings, depth: String(floorDepth) };
-    const generated = "stepover" in effective
-      ? (adaptive ? generateAdaptive : generatePocket)(contour.value, sketch, setup, effective, cutting.value.diameter, islands)
-      : generateContour(contour.value, sketch, setup, effective, cutting.value.diameter);
-    if (!generated.ok) return fail(generated.errors);
     setAttempt(undefined);
-    const preview: CamContourPlayback = { doc, path: generated.value, tip, ids, showTool: true };
+    const preview: CamContourPlayback = { doc, ...generated.value, showTool: true };
     useApp.setState({ camContourPlayback: preview });
   }
 
@@ -152,20 +80,30 @@ export function ContourMilling({ cad, process, settings, tool, resolveFrame, val
     <div className="cam-properties__actions">
       <button type="button" disabled={!selectedEdges.length} onClick={() => addEdges("boundaryEdges")}>Add selected boundary edges</button>
       {firstEdge && <button type="button" onClick={() => onGeometryChange({ boundaryEdges: undefined })}>Clear boundary edges</button>}
-      {"stepover" in settings && <>
+      {!facing && "stepover" in settings && <>
         <button type="button" disabled={!selectedEdges.length} onClick={() => addEdges("islandEdges")}>Add selected island edges</button>
         {!!process.islandEdges?.length && <button type="button" onClick={() => onGeometryChange({ islandEdges: undefined })}>Clear island edges</button>}
       </>}
-      <button type="button" disabled={!selectedFloor} onClick={() => onGeometryChange({ floorFace: selectedFloor })}>Use selected face as floor</button>
-      {process.floorFace && <button type="button" onClick={() => onGeometryChange({ floorFace: undefined })}>Clear floor</button>}
+      {!facing && <><button type="button" disabled={!selectedFloor} onClick={() => onGeometryChange({ floorFace: selectedFloor })}>Use selected face as floor</button>
+      {process.floorFace && <button type="button" onClick={() => onGeometryChange({ floorFace: undefined })}>Clear floor</button>}</>}
     </div>
     {(firstEdge || !!process.islandEdges?.length) && <p>
       {process.boundaryEdges?.length ?? 0} boundary edges · {process.islandEdges?.length ?? 0} island edges
     </p>}
     <dl>
+      {facing && <>
+        <dt><label htmlFor="cam-facing-strategy">Raster strategy</label></dt>
+        <dd><select id="cam-facing-strategy" value={settings.strategy}
+          onChange={(event) => onChange({ strategy: event.target.value === "one-way" ? "one-way" : "zigzag" })}>
+          <option value="zigzag">Zigzag</option><option value="one-way">One-way</option>
+        </select></dd>
+        <dt><label htmlFor="cam-facing-top">Top height (mm)</label></dt>
+        <dd><input id="cam-facing-top" type="number" step="any" value={settings.top}
+          onChange={(event) => onChange({ top: event.target.value })} /></dd>
+      </>}
       {"stepover" in settings ? <>
         <dt><label htmlFor="cam-pocket-stepover">{adaptive ? "Target radial engagement (% of cutter diameter)" : "Stepover (% of cutter diameter)"}</label></dt>
-        <dd><input id="cam-pocket-stepover" type="number" min={adaptive ? 1 : 0} max="50" step="any" value={settings.stepover}
+        <dd><input id="cam-pocket-stepover" type="number" min={adaptive ? 1 : 0} max={facing ? 100 : 50} step="any" value={settings.stepover}
           onChange={(event) => onChange({ stepover: event.target.value })} /></dd>
       </> : <>
       <dt><label htmlFor="cam-contour-direction">Travel direction</label></dt>
@@ -179,7 +117,7 @@ export function ContourMilling({ cad, process, settings, tool, resolveFrame, val
         <option value="center">Center</option><option value="left">Left of travel</option><option value="right">Right of travel</option>
       </select></dd>
       </>}
-      {adaptive && "stepover" in settings && <>
+      {adaptive && !facing && "stepover" in settings && <>
         <dt><label htmlFor="cam-adaptive-entry">Entry</label></dt>
         <dd><select id="cam-adaptive-entry" value={settings.entry ?? "plunge"}
           onChange={(event) => onChange({ entry: event.target.value === "helix" ? "helix" : "plunge" })}>
@@ -198,8 +136,8 @@ export function ContourMilling({ cad, process, settings, tool, resolveFrame, val
             value={settings.rampAngle ?? ""} onChange={(event) => onChange({ rampAngle: event.target.value })} /></dd>
         </>}
       </>}
-      <dt><label htmlFor="cam-contour-depth">Depth (mm)</label></dt>
-      <dd><input id="cam-contour-depth" type="number" min="0" step="any" readOnly={!!process.floorFace} value={process.floorFace ? floorDepth?.toPrecision(8) ?? "" : settings.depth}
+      <dt><label htmlFor="cam-contour-depth">{facing ? "Final height (mm)" : "Depth (mm)"}</label></dt>
+      <dd><input id="cam-contour-depth" type="number" min={facing ? undefined : 0} step="any" readOnly={!!process.floorFace} value={process.floorFace ? floorDepth?.toPrecision(8) ?? "" : settings.depth}
         onChange={(event) => onChange({ depth: event.target.value })} /></dd>
       <dt><label htmlFor="cam-contour-clearance">Clearance (mm)</label></dt>
       <dd><input id="cam-contour-clearance" type="number" min="0" step="any" value={settings.clearance}
@@ -217,8 +155,10 @@ export function ContourMilling({ cad, process, settings, tool, resolveFrame, val
           onChange={(event) => onChange({ [key]: event.target.value })} /></dd>
       </Fragment>)}
     </dl>
-    <p>Depth below the boundary plane. Clearance above it.</p>
-    {"stepover" in settings && <p>Nested loops and added island sketches define areas to leave uncut.</p>}
+    <p>{facing ? "Top and final heights are relative to the boundary plane. Clearance is above both the top and boundary plane."
+      : "Depth below the boundary plane. Clearance above it."}</p>
+    {facing && <p>Facing sweeps the full bounding rectangle, including outside the selected surface. Use one closed loop with room for cutter overtravel.</p>}
+    {!facing && "stepover" in settings && <p>Nested loops and added island sketches define areas to leave uncut.</p>}
     <div className="cam-properties__actions">
       <button type="button" onClick={generate}>Generate toolpath</button>
       <button type="button" disabled={!playback} onClick={() => {
@@ -250,7 +190,7 @@ export function ContourMilling({ cad, process, settings, tool, resolveFrame, val
         useApp.setState({ camContourPlayback: { ...playback, showCenterline: event.target.checked } });
       }} /> Show tool centerline</label>
       <p className="cam-contour__legend">
-        <span>{"stepover" in settings ? "Pocket boundary" : "Programmed contour"}</span><span>Tool centerline</span><span>Entry / retract / link</span>
+        <span>{facing ? "Facing boundary" : "stepover" in settings ? "Pocket boundary" : "Programmed contour"}</span><span>Tool centerline</span><span>Entry / retract / link</span>
       </p>
     </>}
   </section>;

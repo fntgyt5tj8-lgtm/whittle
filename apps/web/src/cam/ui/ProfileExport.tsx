@@ -1,5 +1,7 @@
 import { useState, type FormEvent } from "react";
-import { exportAptCl, generateCircularProfile, type CamFrame, type CircularProfileGeometry, type CircularProfileSettings } from "@whittle/cam";
+import { buildCircularProfile } from "../circularProfile";
+import { downloadApt } from "../downloadApt";
+import { exportAptCl, type CamResult, type CamFrame, type CircularProfileGeometry, type CircularProfileSettings } from "@whittle/cam";
 
 const dimensions = [
   ["diameter", "Flat endmill diameter (mm)"],
@@ -13,7 +15,7 @@ const cuttingConditions = [
   ["spindleRpm", "Spindle speed (rpm)"],
 ] as const;
 
-export function ProfileExport({ name, resolve, settings = {}, onChange, resolveFrame, validateReferences, hasContour, hasTool, toolDiameter }: {
+export function ProfileExport({ name, resolve, settings = {}, onChange, resolveFrame, resolveOrientation, validateReferences, hasContour, hasTool, toolDiameter }: {
   name: string;
   hasContour: boolean;
   hasTool: boolean;
@@ -22,6 +24,7 @@ export function ProfileExport({ name, resolve, settings = {}, onChange, resolveF
   onChange: (settings: Partial<CircularProfileSettings>) => void;
   validateReferences: () => readonly string[];
   resolveFrame: () => CamFrame | undefined;
+  resolveOrientation: (setup: CamFrame, sketch: CamFrame) => CamResult<CamFrame> | undefined;
   resolve: () => CircularProfileGeometry | undefined;
 }) {
   const [errors, setErrors] = useState<readonly string[]>([]);
@@ -29,37 +32,7 @@ export function ProfileExport({ name, resolve, settings = {}, onChange, resolveF
 
   function download(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const geometry = resolve();
-    if (!geometry) {
-      setErrors(["The profile sketch is unavailable."]);
-      return;
-    }
-
-    const workpieceCsys = resolveFrame();
-    if (!workpieceCsys) {
-      setErrors(["The context coordinate system is unavailable. Repair the datum or select another workpiece context."]);
-      return;
-    }
-
-    const referenceErrors = validateReferences();
-    if (referenceErrors.length) {
-      setErrors(referenceErrors);
-      return;
-    }
-
-    const fields = new FormData(event.currentTarget);
-    const read = (key: string) => Number(fields.get(key));
-    const path = generateCircularProfile({
-      geometry,
-      workpieceCsys,
-      tool: { kind: "flat-endmill", diameter: toolDiameter ?? read("diameter") },
-      side: fields.get("side") === "inside" ? "inside" : "outside",
-      direction: fields.get("direction") === "cw" ? "cw" : "ccw",
-      depth: read("depth"),
-      clearance: read("clearance"),
-      feed: read("feed"),
-      plungeFeed: read("plungeFeed"),
-    });
+    const path = buildCircularProfile(resolve(), resolveFrame(), toolDiameter, settings, resolveOrientation, validateReferences);
     const apt = path.ok ? exportAptCl(path.value) : path;
     if (!apt.ok) {
       setErrors(apt.errors);
@@ -67,12 +40,7 @@ export function ProfileExport({ name, resolve, settings = {}, onChange, resolveF
     }
 
     setErrors([]);
-    const url = URL.createObjectURL(new Blob([apt.value], { type: "text/plain" }));
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `${name}.apt`;
-    link.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    downloadApt(name, apt.value);
   }
 
   return (

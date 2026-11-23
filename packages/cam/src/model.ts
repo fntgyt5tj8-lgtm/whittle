@@ -43,21 +43,31 @@ export interface CamSetup {
   readonly contexts?: readonly CamWorkpieceContext[];
 }
 
-export interface CircularProfileSettings {
+export interface CamCuttingConditions {
+  readonly feed?: string;
+  readonly plungeFeed?: string;
+  readonly spindleRpm?: string;
+}
+
+export interface CircularProfileSettings extends CamCuttingConditions {
   readonly side?: "inside" | "outside";
   readonly direction?: "cw" | "ccw";
   readonly diameter?: string;
   readonly depth?: string;
   readonly clearance?: string;
-  readonly feed?: string;
-  readonly plungeFeed?: string;
-  readonly spindleRpm?: string;
 }
 
 export interface MillingDepthSettings {
   readonly depth: string;
   readonly clearance: string;
   readonly stepdown?: string;
+}
+
+export interface FacingMillingSettings extends MillingDepthSettings {
+  /** Signed top and final heights relative to the selected boundary plane. */
+  readonly top: string;
+  readonly stepover: string;
+  readonly strategy: "zigzag" | "one-way";
 }
 
 export interface PocketMillingSettings extends MillingDepthSettings {
@@ -99,21 +109,34 @@ export interface CamFloorFace {
   readonly area: number;
 }
 
+export type CamOrientationSource =
+  | { readonly kind: "setup" }
+  | { readonly kind: "sketch" }
+  | { readonly kind: "face"; readonly documentId: string; readonly face: CamFloorFace }
+  | { readonly kind: "plane" | "csys"; readonly documentId: string; readonly entityId: string };
+
+export type CamOrientation = CamOrientationSource & { readonly flip?: boolean };
+
 export interface CamProcess {
+  /** Absence preserves the original machining behavior of older projects. */
+  readonly orientation?: CamOrientation;
+  readonly cuttingConditions?: CamCuttingConditions;
   readonly id: string;
   readonly name: string;
   readonly setupId: string;
-  readonly kind: "profile" | "pocket" | "adaptive";
+  readonly kind: "profile" | "pocket" | "adaptive" | "facing";
   readonly toolPositionId?: string;
   readonly contour?: CamGeometryRef;
   readonly islandSketches?: readonly CamGeometryRef[];
   readonly boundaryEdges?: readonly CamBoundaryEdge[];
   readonly islandEdges?: readonly CamBoundaryEdge[];
   readonly floorFace?: CamFloorFace;
+  readonly facingFace?: CamFloorFace;
   readonly contextId?: string;
   readonly profile?: CircularProfileSettings & { readonly csys?: "world" | "sketch" | `datum:${string}` };
   readonly contourMilling?: ContourMillingSettings;
   readonly pocketMilling?: PocketMillingSettings;
+  readonly facingMilling?: FacingMillingSettings;
   readonly track?: { readonly unitId: string; readonly id: string };
 }
 

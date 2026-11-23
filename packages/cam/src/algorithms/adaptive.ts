@@ -28,7 +28,7 @@ function exposedArea(center: number, cleared: number) {
 
 export function generateAdaptive(
   input: readonly ContourCurve[], sketch: CamFrame, setup: CamFrame, settings: PocketMillingSettings, diameter: number,
-  islandCurves: readonly ContourCurve[] = [],
+  islandCurves: readonly ContourCurve[] = [], outputFrame = setup,
 ): CamResult<ContourPreview> {
   const depths = planMillingDepths(sketch, setup, settings, diameter);
   if (!depths.ok) return depths;
@@ -39,7 +39,7 @@ export function generateAdaptive(
     if (fit && !fit.ok) return fit;
     const stock = settings.stayDown
       ? createAdaptiveLinkPlanner(contourPoint(cuts[0]![0]!, 0), diameter / 2, boundaries.flat(), target) : undefined;
-    if (!fit && !stock) return buildPlanarPreview(boundaries, wall, cuts, sketch, setup, heights, clearance);
+    if (!fit && !stock) return buildPlanarPreview(boundaries, wall, cuts, sketch, setup, heights, clearance, undefined, undefined, outputFrame);
     const planned: (readonly ContourCurve[])[] = [];
     const entries: (HelixEntry | undefined)[] = [];
     const stayDown: (readonly ContourPoint[] | undefined)[] = [];
@@ -60,7 +60,7 @@ export function generateAdaptive(
       if (linked?.waypoints?.length) routedLinks++;
       stock?.record(next);
     }
-    const result = buildPlanarPreview(boundaries, wall, planned, sketch, setup, heights, clearance, entries, stayDown);
+    const result = buildPlanarPreview(boundaries, wall, planned, sketch, setup, heights, clearance, entries, stayDown, outputFrame);
     return result.ok && stock ? { ok: true as const, value: {
       ...result.value, stayDownLinkCount: stayDown.filter(Boolean).length * heights.length,
       stayDownCutLinkCount: cutLinks * heights.length,

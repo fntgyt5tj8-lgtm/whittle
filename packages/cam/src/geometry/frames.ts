@@ -21,6 +21,35 @@ export function cross(a: CamVector, b: CamVector): CamVector {
 export function subtract(a: CamVector, b: CamVector): CamVector {
   return [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
 }
+export function unit(v: CamVector): CamVector {
+  const length = Math.hypot(...v);
+  return [v[0] / length, v[1] / length, v[2] / length];
+}
+
+/** Prefer projected setup X, falling back to setup Y near the projection singularity. */
+export function normalFrame(origin: CamVector, normal: CamVector, setup: CamFrame): CamFrame | undefined {
+  if (!origin.every(Number.isFinite) || !normal.every(Number.isFinite) || Math.hypot(...normal) < 1e-10) return;
+  const z = unit(normal);
+  const tangent = cross(Math.abs(dot(setup.x, z)) < 0.9999 ? setup.x : setup.y, z);
+  const x = unit(cross(z, tangent));
+  return { origin, x, y: unit(cross(z, x)), z };
+}
+
+export function flipCamFrame(frame: CamFrame): CamFrame {
+  const negate = ([x, y, z]: CamVector): CamVector => [-x, -y, -z];
+  return { ...frame, y: negate(frame.y), z: negate(frame.z) };
+}
+
+/** Move only along the tool axis so cutting depths are relative to the boundary. */
+export function camPlaneAt(frame: CamFrame, point: CamVector): CamFrame {
+  const height = dot(subtract(point, frame.origin), frame.z);
+  return { ...frame, origin: [
+    frame.origin[0] + height * frame.z[0],
+    frame.origin[1] + height * frame.z[1],
+    frame.origin[2] + height * frame.z[2],
+  ] };
+}
+
 export function isUnit(v: CamVector) {
   return Math.abs(dot(v, v) - 1) <= 1e-9;
 }

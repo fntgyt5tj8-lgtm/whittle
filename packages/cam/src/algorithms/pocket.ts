@@ -101,7 +101,7 @@ export function circularClearing(circle: Extract<ContourCurve, { kind: "arc" }>,
 
 export function generatePocket(
   input: readonly ContourCurve[], sketch: CamFrame, setup: CamFrame, settings: PocketMillingSettings, diameter: number,
-  islandCurves: readonly ContourCurve[] = [],
+  islandCurves: readonly ContourCurve[] = [], outputFrame = setup,
 ): CamResult<ContourPreview> {
   const depths = planMillingDepths(sketch, setup, settings, diameter);
   if (!depths.ok) return depths;
@@ -125,7 +125,7 @@ export function generatePocket(
   const clearance = Number(settings.clearance);
   if (simple) {
     if (!simple.ok) return simple;
-    return buildPlanarPreview(loops, simple.value.wall, [simple.value.cut], sketch, setup, depths.value, clearance);
+    return buildPlanarPreview(loops, simple.value.wall, [simple.value.cut], sketch, setup, depths.value, clearance, undefined, undefined, outputFrame);
   }
 
   let pocket = offsetPocket(loops, radius, step, undefined, islandLoops.length);
@@ -134,5 +134,5 @@ export function generatePocket(
     pocket = offsetPocket(loops, radius, step, tolerance, islandLoops.length);
   }
   if (!pocket.ok) return pocket;
-  return buildPlanarPreview(loops, pocket.value.wall, pocket.value.levels.flat(), sketch, setup, depths.value, clearance);
+  return buildPlanarPreview(loops, pocket.value.wall, pocket.value.levels.flat(), sketch, setup, depths.value, clearance, undefined, undefined, outputFrame);
 }
