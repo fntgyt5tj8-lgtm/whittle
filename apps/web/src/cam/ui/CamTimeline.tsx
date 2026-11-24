@@ -700,7 +700,7 @@ export function CamTimeline({ project, selectedKey, setupId, strategies, createS
                             event.preventDefault();
                             setFolderMenu({ id: folder.id, x: event.clientX, y: event.clientY });
                           }}>
-                          <Icon name="folder" size={16} /><span>{folder.name}</span>
+                          <span>{folder.name}</span>
                           <Icon name={folder.open ? "chevronDown" : "chevronRight"} size={14} />
                         </button>
                         {children.map((child, offset) => renderStep(child, index + offset, offset > 0 && folder.open))}
