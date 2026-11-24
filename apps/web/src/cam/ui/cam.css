@@ -4,6 +4,19 @@
   max-width: min(10rem, 35%);
 }
 
+.timeline__track.cam-timeline__track {
+  min-width: 0;
+  scrollbar-width: none;
+}
+
+.cam-timeline__track::-webkit-scrollbar {
+  display: none;
+}
+
+.cam-timeline__track > .step-wrap {
+  flex: none;
+}
+
 .cam-properties {
   padding: 0.75rem;
 }
