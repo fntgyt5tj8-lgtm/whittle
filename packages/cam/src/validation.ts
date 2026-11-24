@@ -62,6 +62,21 @@ export function validateProject(project: CamProject): string[] {
       errors.push(`${process.name} needs an existing workpiece context in its setup.`);
     }
   }
+  const folderIds = new Set<string>();
+  const folderMembers = new Set<string>();
+  const operationSetups = new Map(project.processes.map(({ id, setupId }) => [id, setupId]));
+  for (const folder of project.operationFolders ?? []) {
+    if (!folder.id.trim() || folderIds.has(folder.id)) errors.push("Operation folder IDs must be present and unique.");
+    folderIds.add(folder.id);
+    if (!folder.name.trim() || !folder.operationIds.length) errors.push("Each operation folder needs a name and operations.");
+    const setup = operationSetups.get(folder.operationIds[0]!);
+    for (const id of folder.operationIds) {
+      if (!setup || operationSetups.get(id) !== setup || folderMembers.has(id)) {
+        errors.push("An operation folder must contain unique operations from one setup.");
+      }
+      folderMembers.add(id);
+    }
+  }
   if (project.processPlan) {
     const plannedProcesses = new Set<string>();
     const stageIds = new Set<string>();
@@ -157,6 +172,10 @@ export function isCamProject(value: unknown): value is CamProject {
     && (value.planRollback === undefined || (typeof value.planRollback === "number"
       && Number.isSafeInteger(value.planRollback) && value.planRollback >= 0))
     && (value.toolPositions === undefined || (Array.isArray(value.toolPositions) && value.toolPositions.every(toolPosition)))
+    && (value.operationFolders === undefined || (Array.isArray(value.operationFolders)
+      && value.operationFolders.every((folder) => record(folder) && typeof folder.id === "string"
+        && typeof folder.name === "string" && typeof folder.open === "boolean"
+        && Array.isArray(folder.operationIds) && folder.operationIds.every((id) => typeof id === "string"))))
     && (value.tooling === undefined || record(value.tooling))
     && Array.isArray(value.setups) && value.setups.every((item) => record(item)
       && typeof item.id === "string" && typeof item.name === "string"

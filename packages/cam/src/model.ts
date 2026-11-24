@@ -213,6 +213,13 @@ export interface CamToolPosition {
   readonly cutting?: FlatEndmill;
 }
 
+export interface CamOperationFolder {
+  readonly id: string;
+  readonly name: string;
+  readonly operationIds: readonly string[];
+  readonly open: boolean;
+}
+
 export interface CamProject {
   readonly schemaVersion: 1;
   readonly name: string;
@@ -222,6 +229,7 @@ export interface CamProject {
   readonly processPlan?: readonly CamPlanItem[];
   /** Number of plan entries before the rollback marker. Absence means the end. */
   readonly planRollback?: number;
+  readonly operationFolders?: readonly CamOperationFolder[];
   readonly toolPositions?: readonly CamToolPosition[];
   /** Reserved metadata from earlier CAM documents. */
   readonly tooling?: Readonly<Record<string, unknown>>;

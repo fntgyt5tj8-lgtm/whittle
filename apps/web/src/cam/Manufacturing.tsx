@@ -1,6 +1,6 @@
 import type { Draft } from "immer";
 import { createProject, migrateWorkpieceContexts, type CamProject } from "@whittle/cam";
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useMemo, type ReactNode } from "react";
 import { manufacturingLabel, useCamWorkspace } from "./ui/CamWorkspace";
 import { isNarrow, mutate, useApp } from "../state/store";
 import { commandById } from "../state/commands";
@@ -37,7 +37,9 @@ export function ManufacturingSlots({ enabled, children }: { enabled: boolean; ch
     const status = regen?.status.find(({ id }) => id === f.id);
     return status?.state === "error" ? [`${f.name}: ${status.message ?? "CAD source unavailable."}`] : [];
   });
-  const cam = useCamWorkspace(whittleCad, doc.id, migrateWorkpieceContexts((isCam && doc.manufacturing) || emptyProject),
+  const storedProject = (isCam && doc.manufacturing) || emptyProject;
+  const project = useMemo(() => migrateWorkpieceContexts(storedProject), [storedProject]);
+  const cam = useCamWorkspace(whittleCad, doc.id, project,
     saveProject, openProperties, sourceErrors, active && !editing && !toolSelection,
     () => useApp.setState({ selection: [], hover: null, camBrowserTab: "browser" }));
   useEffect(() => {
@@ -73,6 +75,15 @@ export function ManufacturingSlots({ enabled, children }: { enabled: boolean; ch
             ))}
           </div>
           <span className="toolgroup__label">Setup and operations</span>
+        </div>}
+        {isCam && <div className="toolgroup" role="group" aria-label="Toolpaths">
+          <div className="toolgroup__tools">
+            <button className="tool" type="button" disabled={!cam.hasOperations || cam.batchRunning || editing}
+              onClick={() => { void cam.generateAll(); openProperties(); }}>
+              <span className="tool__label">Generate All Toolpaths</span>
+            </button>
+          </div>
+          <span className="toolgroup__label">{cam.batchRunning ? `${cam.batch?.done} / ${cam.batch?.total}` : "Toolpaths"}</span>
         </div>}
       </>
     ),

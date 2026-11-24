@@ -1,7 +1,8 @@
-import { useState, type FormEvent } from "react";
-import { buildCircularProfile } from "../circularProfile";
+import { useLayoutEffect, useState, type FormEvent } from "react";
 import { downloadApt } from "../downloadApt";
-import { exportAptCl, type CamResult, type CamFrame, type CircularProfileGeometry, type CircularProfileSettings } from "@whittle/cam";
+import { exportAptCl, type CircularProfileSettings } from "@whittle/cam";
+import { useApp } from "../../state/store";
+import type { ToolpathCache } from "../toolpathCache";
 
 const dimensions = [
   ["diameter", "Flat endmill diameter (mm)"],
@@ -15,7 +16,9 @@ const cuttingConditions = [
   ["spindleRpm", "Spindle speed (rpm)"],
 ] as const;
 
-export function ProfileExport({ name, operationActive, resolve, settings = {}, onChange, resolveFrame, resolveOrientation, validateReferences, hasContour, hasTool, toolDiameter }: {
+type GenerationResult = Awaited<ReturnType<ToolpathCache["generate"]>>;
+
+export function ProfileExport({ name, operationActive, settings = {}, onChange, toolpath, onGenerate, previewEnabled, hasContour, hasTool, toolDiameter, geometryAvailable }: {
   name: string;
   operationActive: boolean;
   hasContour: boolean;
@@ -23,24 +26,35 @@ export function ProfileExport({ name, operationActive, resolve, settings = {}, o
   toolDiameter?: number;
   settings?: CircularProfileSettings;
   onChange: (settings: Partial<CircularProfileSettings>) => void;
-  validateReferences: () => readonly string[];
-  resolveFrame: () => CamFrame | undefined;
-  resolveOrientation: (setup: CamFrame, sketch: CamFrame) => CamResult<CamFrame> | undefined;
-  resolve: () => CircularProfileGeometry | undefined;
+  toolpath?: ReturnType<ToolpathCache["inspect"]>;
+  onGenerate: () => Promise<GenerationResult>;
+  previewEnabled: boolean;
+  geometryAvailable: boolean;
 }) {
   const [errors, setErrors] = useState<readonly string[]>([]);
-  const geometryAvailable = !!resolve();
+  const doc = useApp((s) => s.doc);
+  const preview = operationActive && previewEnabled && toolpath?.status === "valid" ? toolpath.value : undefined;
+  useLayoutEffect(() => {
+    if (!preview) return;
+    useApp.setState({ camContourPlayback: { doc, ...preview, showTool: true }, camContourProgress: 0 });
+    return () => useApp.setState({ camContourPlayback: null, camContourProgress: 0 });
+  }, [doc, preview]);
 
-  function download(event: FormEvent<HTMLFormElement>) {
+  async function download(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!operationActive) return;
-    const path = buildCircularProfile(resolve(), resolveFrame(), toolDiameter, settings, resolveOrientation, validateReferences);
-    const apt = path.ok ? exportAptCl(path.value) : path;
+    const result = await onGenerate();
+    if (useApp.getState().doc !== doc) return;
+    if (!result) {
+      setErrors(["Toolpath generation was interrupted. Try again once the geometry is ready."]);
+      return;
+    }
+    if (!result.ok) return;
+    const apt = exportAptCl(result.value.profile!);
     if (!apt.ok) {
       setErrors(apt.errors);
       return;
     }
-
     setErrors([]);
     downloadApt(name, apt.value);
   }
@@ -73,6 +87,8 @@ export function ProfileExport({ name, operationActive, resolve, settings = {}, o
         ))}
       </dl>
       {hasContour && <div className="cam-properties__actions"><button type="submit" disabled={!geometryAvailable || !operationActive}>Export APT-CL</button></div>}
+      <button type="button" disabled={!operationActive || toolpath?.status === "generating"} onClick={() => void onGenerate()}>Generate toolpath</button>
+      {toolpath?.status === "failed" && <ul role="alert">{toolpath.errors.map((error) => <li key={error}>{error}</li>)}</ul>}
       {errors.length > 0 && <ul role="alert">{errors.map((error) => <li key={error}>{error}</li>)}</ul>}
     </form>
   );

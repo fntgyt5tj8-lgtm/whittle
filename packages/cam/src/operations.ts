@@ -1,4 +1,4 @@
-import type { CamContextFrame, CamWorkpieceContext, CamPlanItem, CamPlanStage, CamProcess, CamProject, CamSetup } from "./model";
+import type { CamContextFrame, CamMachiningStage, CamOperationFolder, CamWorkpieceContext, CamPlanItem, CamPlanStage, CamProcess, CamProject, CamSetup } from "./model";
 
 export function createProject(name: string): CamProject {
   return { schemaVersion: 1, name, setups: [], processes: [], processPlan: [] };
@@ -73,13 +73,103 @@ export function movePlannedOperation(project: CamProject, id: string, targetId: 
   return { ...project, processPlan: plan };
 }
 
+export type TimelineDragSource = { operationId: string } | { folderId: string };
+export type TimelineDropTarget = {
+  operationId: string;
+  side: "before" | "after";
+  folderId?: string;
+};
+
+/** Apply the order and membership change together so one undo restores both. */
+export function moveTimelineItems(project: CamProject, source: TimelineDragSource, target: TimelineDropTarget): CamProject {
+  const folders = project.operationFolders ?? [];
+  const movingFolder = "folderId" in source;
+  const ids = movingFolder
+    ? folders.find(({ id }) => id === source.folderId)?.operationIds
+    : [source.operationId];
+  const destination = folders.find(({ id }) => id === target.folderId);
+  if (!ids?.length || (target.folderId && (!destination?.operationIds.includes(target.operationId) || movingFolder))) {
+    return project;
+  }
+
+  const plan = getProcessPlan(project);
+  const targetIndex = plan.findIndex((item) => item.kind === "process" && item.processId === target.operationId);
+  if (targetIndex < 0 || (movingFolder && ids.includes(target.operationId))) return project;
+  const setupId = project.processes.find(({ id }) => id === target.operationId)?.setupId;
+  if (!setupId || ids.some((id) => !project.processes.some((item) => item.id === id && item.setupId === setupId))) return project;
+  const boundary = targetIndex + (target.side === "after" ? 1 : 0);
+  const movingIds = new Set(ids);
+  const moved = plan.filter((item) => item.kind === "process" && movingIds.has(item.processId));
+  if (moved.length !== movingIds.size) return project;
+
+  let insertionIndex = boundary;
+  for (const id of movingIds) {
+    const from = plan.findIndex((item) => item.kind === "process" && item.processId === id);
+    if (from < boundary) insertionIndex--;
+    // The operation immediately across the insertion boundary is untouched.
+    const crossed = plan[from < boundary ? boundary - 1 : boundary];
+    if (crossed?.kind !== "process" || planMoveProblem(project, id, crossed.processId)) return project;
+  }
+
+  const reordered = plan.filter((item) => item.kind !== "process" || !movingIds.has(item.processId));
+  reordered.splice(insertionIndex, 0, ...moved);
+  const orderChanged = reordered.some((item, index) => item !== plan[index]);
+  const membershipChanged = "operationId" in source
+    && folders.find((folder) => folder.operationIds.includes(source.operationId)) !== destination;
+  if (!orderChanged && !membershipChanged) return project;
+
+  let updated = orderChanged ? { ...project, processPlan: reordered } : project;
+  if (membershipChanged && "operationId" in source) {
+    updated = {
+      ...updated,
+      operationFolders: folders.flatMap((folder) => {
+        if (folder === destination) return [{ ...folder, operationIds: [...folder.operationIds, source.operationId] }];
+        const operationIds = folder.operationIds.filter((id) => id !== source.operationId);
+        if (operationIds.length === folder.operationIds.length) return [folder];
+        return operationIds.length ? [{ ...folder, operationIds }] : [];
+      }),
+    };
+  }
+  return updated;
+}
+
+export function pastePlannedOperations(
+  project: CamProject, copies: readonly { operation: CamProcess; stage: CamMachiningStage }[],
+): CamProject {
+  if (!copies.length) return project;
+  const end = activePlanEnd(project);
+  const plan = getProcessPlan(project);
+  return rollBackPlan({
+    ...project,
+    processes: [...project.processes, ...copies.map(({ operation }) => operation)],
+    processPlan: [
+      ...plan.slice(0, end),
+      ...copies.map(({ operation, stage }) => ({ kind: "process" as const, processId: operation.id, stage })),
+      ...plan.slice(end),
+    ],
+  }, end + copies.length);
+}
+
+/** Move these operations out of their old folders and into a new folder. */
+export function addOperationFolder(project: CamProject, folder: CamOperationFolder): CamProject {
+  const ids = new Set(folder.operationIds);
+  return { ...project, operationFolders: [...withoutFolderMembers(project, ids), folder] };
+}
+
+function withoutFolderMembers(project: CamProject, ids: ReadonlySet<string>) {
+  return (project.operationFolders ?? []).map((folder) => ({
+    ...folder, operationIds: folder.operationIds.filter((id) => !ids.has(id)),
+  })).filter((folder) => folder.operationIds.length);
+}
+
 export function deletePlannedOperation(project: CamProject, id: string): CamProject {
   if (!project.processes.some((item) => item.id === id)) return project;
   const plan = getProcessPlan(project);
   const keep = (item: CamPlanItem) => item.kind !== "process" || item.processId !== id;
   const end = plan.slice(0, activePlanEnd(project)).filter(keep).length;
   return rollBackPlan({
-    ...project, processPlan: plan.filter(keep), processes: project.processes.filter((item) => item.id !== id),
+    ...project, operationFolders: project.operationFolders && withoutFolderMembers(project, new Set([id])),
+    processPlan: plan.filter(keep), processes: project.processes.filter((item) => item.id !== id),
   }, end);
 }
 

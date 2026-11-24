@@ -153,6 +153,7 @@ export interface AppState {
   selection: Pick[];
   camBrowserTab: "browser" | "tools";
   camToolSelection: CamToolSelection | null;
+  camToolpathSession: number;
   camContourPlayback: CamContourPlayback | null;
   camContourProgress: number;
   isolatedToolId: Id | null;
@@ -225,6 +226,7 @@ export const useApp = create<AppState>(() => ({
   selection: [],
   camBrowserTab: "browser",
   camToolSelection: null,
+  camToolpathSession: 0,
   camContourPlayback: null,
   camContourProgress: 0,
   isolatedToolId: null,
@@ -334,6 +336,7 @@ export function replaceDocument(doc: WhittleDocument, fileName: string | null, d
     documentKind,
     camBrowserTab: "browser",
     camToolSelection: null,
+    camToolpathSession: get().camToolpathSession + 1,
     camContourPlayback: null,
     camContourProgress: 0,
     isolatedToolId: null,

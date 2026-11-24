@@ -21,7 +21,12 @@ function targets(): Id[] {
 
 let copied: Feature[] = [];
 
+// The setup-filtered Manufacturing timeline owns its selection and clipboard.
+export const camTimelineClipboard: { copy?: () => void; paste?: () => void } = {};
+
+
 export function copySteps() {
+  if (useApp.getState().ribbonTab === "manufacturing" && camTimelineClipboard.copy) return camTimelineClipboard.copy();
   const ids = targets();
   const doc = useApp.getState().doc;
   if (!ids.length) return toast("info", "Click a step in the timeline (Shift+click for more), then Ctrl+C.");
@@ -30,6 +35,7 @@ export function copySteps() {
 }
 
 export function pasteSteps() {
+  if (useApp.getState().ribbonTab === "manufacturing" && camTimelineClipboard.paste) return camTimelineClipboard.paste();
   if (!copied.length) return toast("info", "Nothing copied yet: click a step in the timeline, then Ctrl+C.");
   // ponytail: ids are random and unique, so a text swap re-points every link between the copies.
   let text = JSON.stringify(copied);

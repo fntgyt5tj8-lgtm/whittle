@@ -256,8 +256,8 @@ try {
   const renamed = history.getByRole("button", { name: "First pass · Main machining" });
   await renamed.click({ button: "right" });
   const menu = page.getByRole("menu");
-  assert.equal(await menu.getByRole("menuitem", { name: "Copy" }).isDisabled(), true);
-  assert.equal(await menu.getByRole("menuitem", { name: "Put in a folder" }).isDisabled(), true);
+  assert.equal(await menu.getByRole("menuitem", { name: "Copy", exact: true }).isDisabled(), false);
+  assert.equal(await menu.getByRole("menuitem", { name: "Put in a folder", exact: true }).isDisabled(), false);
   assert.equal(await menu.getByRole("menuitem", { name: "Move later" }).isDisabled(), true);
   await menu.getByRole("menuitem", { name: "Turn off (suppress)", exact: true }).click();
   assert.match(await renamed.getAttribute("class"), /step--suppressed/);
@@ -374,6 +374,81 @@ try {
   }
 
   const thirdStep = history.getByRole("button", { name: "Profile 3 · Main machining" });
+  await thirdStep.click({ button: "right" });
+  await menu.getByRole("menuitem", { name: "Copy", exact: true }).click();
+  await thirdStep.click({ button: "right" });
+  await menu.getByRole("menuitem", { name: "Paste", exact: true }).click();
+  const copiedStep = history.getByRole("button", { name: "Profile 3 copy · Main machining", exact: true });
+  await copiedStep.waitFor();
+  assert.equal(await copiedStep.getAttribute("aria-description"), "Toolpath missing");
+  await command("undo");
+  await copiedStep.waitFor({ state: "detached" });
+
+  await second.click();
+  await thirdStep.click({ modifiers: ["Shift"] });
+  await thirdStep.click({ button: "right" });
+  await menu.getByRole("menuitem", { name: "Put in a folder (2 steps)", exact: true }).click();
+  await page.getByRole("dialog").getByRole("textbox", { name: "Name" }).fill("Finishing");
+  await page.getByRole("dialog").getByRole("button", { name: "Create", exact: true }).click();
+  const folder = history.getByRole("button", { name: "Finishing", exact: true });
+  const folderGroup = history.getByRole("group", { name: "Finishing", exact: true });
+  await folder.waitFor();
+  const collapsedHeight = (await history.boundingBox()).height;
+  assert.equal(await folder.getAttribute("aria-expanded"), "false");
+  assert.equal(await folderGroup.locator(".step").count(), 0);
+  await folder.press("Enter");
+  assert.equal(await folder.getAttribute("aria-expanded"), "true");
+  assert.equal(await folder.evaluate((button) => button === document.activeElement), true);
+  const headerBox = await folder.boundingBox();
+  const childBoxes = await folderGroup.locator(".step").evaluateAll((buttons) => buttons.map((button) => {
+    const { x, y, width, height } = button.getBoundingClientRect();
+    return { x, y, width, height };
+  }));
+  assert.equal(childBoxes.length, 2);
+  let right = headerBox.x + headerBox.width;
+  for (const box of childBoxes) {
+    assert.equal(box.y + box.height / 2, headerBox.y + headerBox.height / 2);
+    assert.ok(box.x >= right);
+    right = box.x + box.width;
+  }
+  assert.equal(await folderGroup.getByRole("button", { name: expected[0], exact: true }).count(), 0);
+  assert.equal((await history.boundingBox()).height, collapsedHeight);
+  // Dropping on a header edge detaches the tile, while the center accepts it.
+  await thirdStep.dragTo(folder, { targetPosition: { x: headerBox.width - 3, y: headerBox.height / 2 } });
+  assert.equal(await folderGroup.getByRole("button", { name: "Profile 3 · Main machining" }).count(), 0);
+  await folder.click();
+  await thirdStep.dragTo(folder);
+  await thirdStep.waitFor({ state: "detached" });
+  await folder.click();
+  assert.equal(await folderGroup.locator(".step").count(), 2);
+
+  const operationNames = async () => (await tileNames()).filter(Boolean);
+  async function dragFolderAroundFirst(side) {
+    const box = await first.boundingBox();
+    await folder.dragTo(first, { targetPosition: { x: box.width * (side === "before" ? 0.25 : 0.75), y: box.height / 2 } });
+  }
+  // Reordering a whole folder is restricted to a compatible machining stage.
+  await dragFolderAroundFirst("before");
+  assert.deepEqual(await operationNames(), [...expected, "Profile 3 · Main machining"]);
+  await second.click();
+  await machiningStage.selectOption({ label: "Main machining" });
+  await dragFolderAroundFirst("before");
+  assert.deepEqual(await operationNames(), ["Profile 2 · Main machining", "Profile 3 · Main machining", expected[0]]);
+  await folder.click();
+  await dragFolderAroundFirst("after");
+  assert.equal(await folder.getAttribute("aria-expanded"), "false");
+  await folder.click();
+  assert.deepEqual(await operationNames(), [expected[0], "Profile 2 · Main machining", "Profile 3 · Main machining"]);
+  await secondMain.click();
+  await machiningStage.selectOption({ label: "Sub / back-working" });
+
+  await thirdStep.click();
+  await folder.click({ button: "right" });
+  await menu.getByRole("menuitem", { name: "Ungroup", exact: true }).click();
+  await thirdStep.waitFor();
+  assert.equal(await folder.count(), 0);
+  console.log("ok  Manufacturing operation clipboard and collapsible folders");
+
   const exportButton = properties.getByRole("button", { name: "Export APT-CL" });
   await thirdStep.click({ button: "right" });
   await menu.getByRole("menuitem", { name: "Turn off (suppress)", exact: true }).click();

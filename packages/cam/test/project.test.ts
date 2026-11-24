@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { activePlanEnd, deletePlannedOperation, movePlannedOperation, plannedOperations, rollBackPlan, addPlanStage, addProcess, addSetup, createProject, getProcessPlan, migrateWorkpieceContexts, validateProject, type CamSetup } from "../src";
+import { activePlanEnd, addOperationFolder, pastePlannedOperations, deletePlannedOperation, movePlannedOperation, moveTimelineItems, plannedOperations, rollBackPlan, addPlanStage, addProcess, addSetup, createProject, getProcessPlan, migrateWorkpieceContexts, validateProject, type CamSetup } from "../src";
 import { isCamProject } from "../src/validation";
 
 const setup: CamSetup = {
@@ -19,6 +19,74 @@ describe("CAM project", () => {
     expect(prepared.processes).toEqual([]);
     expect(JSON.parse(JSON.stringify(project))).toEqual(project);
     expect(validateProject(project)).toEqual([]);
+  });
+
+  it("pastes at rollback and keeps folders independent of operation order", () => {
+    const second = { ...profile, id: "profile-2" };
+    const copy = { ...profile, id: "profile-copy" };
+    const project = addProcess(addProcess(addSetup(createProject("Job"), setup), profile), second);
+    const pasted = pastePlannedOperations(rollBackPlan(project, 1), [{ stage: "sub", operation: copy }]);
+    expect(plannedOperations(pasted)).toEqual([profile, copy]);
+    expect(getProcessPlan(pasted)[1]).toEqual({ kind: "process", processId: copy.id, stage: "sub" });
+    const folder = { id: "folder", name: "Cutting", open: false, operationIds: [copy.id, second.id] };
+    const grouped = addOperationFolder(pasted, folder);
+    expect(plannedOperations(grouped)).toEqual([profile, copy]);
+    expect(isCamProject(JSON.parse(JSON.stringify(grouped)))).toBe(true);
+    expect(validateProject(grouped)).toEqual([]);
+    const regrouped = addOperationFolder(grouped, { ...folder, id: "other", operationIds: [copy.id] });
+    expect(regrouped.operationFolders?.map(({ operationIds }) => operationIds)).toEqual([[second.id], [copy.id]]);
+    expect(deletePlannedOperation(deletePlannedOperation(grouped, copy.id), second.id).operationFolders).toEqual([]);
+  });
+
+  it("moves a folder as a block in plan order and retains rollback", () => {
+    const second = { ...profile, id: "profile-2" };
+    const third = { ...profile, id: "profile-3" };
+    const project = [profile, second, third].reduce(addProcess, addSetup(createProject("Job"), setup));
+    const grouped = addOperationFolder(rollBackPlan(project, 2), {
+      id: "folder", name: "Finishing", open: false, operationIds: [third.id, second.id],
+    });
+    const moved = moveTimelineItems(grouped, { folderId: "folder" }, { operationId: profile.id, side: "before" });
+    expect(plannedOperations(moved)).toEqual([second, third]);
+    expect(activePlanEnd(moved)).toBe(2);
+    expect(moved.operationFolders).toBe(grouped.operationFolders);
+    expect(moveTimelineItems(moved, { folderId: "folder" }, { operationId: profile.id, side: "after" }).processPlan)
+      .toEqual(grouped.processPlan);
+  });
+
+  it("updates folder membership and operation order together", () => {
+    const second = { ...profile, id: "profile-2" };
+    const third = { ...profile, id: "profile-3" };
+    const project = [profile, second, third].reduce(addProcess, addSetup(createProject("Job"), setup));
+    const grouped = addOperationFolder(addOperationFolder(project, {
+      id: "roughing", name: "Roughing", open: true, operationIds: [profile.id],
+    }), { id: "finishing", name: "Finishing", open: false, operationIds: [third.id] });
+    const inserted = moveTimelineItems(grouped, { operationId: profile.id }, {
+      operationId: third.id, side: "after", folderId: "finishing",
+    });
+    expect(plannedOperations(inserted)).toEqual([second, third, profile]);
+    expect(inserted.operationFolders).toEqual([
+      { id: "finishing", name: "Finishing", open: false, operationIds: [third.id, profile.id] },
+    ]);
+
+    const detached = moveTimelineItems(inserted, { operationId: profile.id }, { operationId: profile.id, side: "after" });
+    expect(detached.processPlan).toBe(inserted.processPlan);
+    expect(detached.operationFolders?.[0]?.operationIds).toEqual([third.id]);
+  });
+
+  it("rejects crossing stage and setup boundaries when dragging timeline items", () => {
+    const otherSetup = { ...setup, id: "other-setup" };
+    const second = { ...profile, id: "profile-2" };
+    const third = { ...profile, id: "profile-3", setupId: otherSetup.id };
+    const transfer = { id: "transfer", kind: "transfer", setupId: setup.id } as const;
+    const draft = addSetup(addSetup(createProject("Job"), setup), otherSetup);
+    const project = addProcess(addProcess(addPlanStage(addProcess(draft, profile), transfer), second), third);
+    const grouped = addOperationFolder(project, {
+      id: "folder", name: "Finishing", open: false, operationIds: [second.id],
+    });
+    expect(moveTimelineItems(grouped, { folderId: "folder" }, { operationId: profile.id, side: "before" })).toBe(grouped);
+    expect(moveTimelineItems(grouped, { operationId: third.id }, {
+      operationId: second.id, side: "after", folderId: "folder",
+    })).toBe(grouped);
   });
 
   it("preserves part order independently of execution track assignments", () => {

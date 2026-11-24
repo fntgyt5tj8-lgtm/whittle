@@ -1,5 +1,5 @@
 import {
-  CAM_WORLD, generateAdaptive, generateContour, generateFacing, generatePocket, isCamFrame, normalFrame, pocketBoundaries, transformCamVector, type ContourCurve, type CamFrame, type CamProcess, type CamToolPosition, type CamResult, type ContourMillingSettings, type FacingMillingSettings, type PocketMillingSettings,
+  CAM_WORLD, isCamFrame, normalFrame, pocketBoundaries, transformCamVector, type ContourCurve, type CamFrame, type CamProcess, type CamToolPosition, type CamResult, type ContourMillingSettings, type FacingMillingSettings, type PocketMillingSettings,
 } from "@whittle/cam";
 import { machiningPlane, projectPlanarCurves, resolveOrientation } from "./orientation";
 import { modelEdges } from "./modelEdges";
@@ -31,7 +31,7 @@ export function millingGeometry(cad: CamCadAdapter, documentId: string | undefin
   return { firstEdge, face, boundary, orientation, local, sketch, floorDepth };
 }
 
-export function generateMilling(
+export function prepareMilling(
   cad: CamCadAdapter, documentId: string | undefined, process: CamProcess,
   settings: ContourMillingSettings | PocketMillingSettings | FacingMillingSettings,
   tool: CamToolPosition | undefined, setup: CamFrame | undefined, errors: readonly string[],
@@ -94,11 +94,8 @@ export function generateMilling(
   }
   const effective = floorDepth === undefined ? settings : { ...settings, depth: String(floorDepth) };
   const machiningFrame = local?.ok ? local.value : setup;
-  const generated = "strategy" in effective
-    ? generateFacing(curves, sketch, machiningFrame, effective, cutting.value.diameter, setup)
-    : "stepover" in effective
-    ? (adaptive ? generateAdaptive : generatePocket)(curves, sketch, machiningFrame, effective, cutting.value.diameter, islands, setup)
-    : generateContour(curves, sketch, machiningFrame, effective, cutting.value.diameter, setup);
-  if (!generated.ok) return fail(generated.errors);
-  return { ok: true, value: { path: generated.value, tip, ids, diameter: cutting.value.diameter } } as const;
+  return { ok: true, value: {
+    kind: "milling", curves, sketch, machiningFrame, settings: effective, diameter: cutting.value.diameter,
+    islands, setup, adaptive, tip, ids,
+  } } as const;
 }

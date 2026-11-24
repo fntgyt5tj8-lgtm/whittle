@@ -749,6 +749,18 @@ try {
   await page.getByRole("button", { name: "Open CAM", exact: true }).click();
   await page.waitForFunction(() => window.whittle.useApp.getState().fileName === "manufacturing-regression.cam");
   await awaitTool(2);
+  const batchButton = page.getByRole("button", { name: "Generate All Toolpaths", exact: true });
+  async function generateAll(reused) {
+    const start = performance.now();
+    await batchButton.click();
+    await properties.getByText(`Toolpaths 6 of 6 processed · ${reused} reused`, { exact: true }).waitFor();
+    return Math.round(performance.now() - start);
+  }
+  const coldMs = await generateAll(0);
+  const warmMs = await generateAll(6);
+  const workers = page.workers().filter((worker) => worker.url().includes("toolpath.worker"));
+  assert.equal(workers.length, await page.evaluate(() => Math.min(2, navigator.hardwareConcurrency || 1)));
+  console.log(`ok  Generate All Toolpaths (6 operations, ${workers.length} workers): empty cache ${coldMs} ms, full cache ${warmMs} ms`);
   await checkVisibility(beforeIsolation);
   assert.equal(await restore.count(), 0);
   assert.equal((await toolModel()).id, tool.id);
@@ -775,7 +787,8 @@ try {
   assert.equal(await contour.getByLabel("Tangent lead-in (mm)").inputValue(), "1");
   assert.equal(await contour.getByLabel("Tangent lead-out (mm)").inputValue(), "0.75");
   assert.equal(await properties.getByLabel("Tool position", { exact: true }).inputValue(), tool.id);
-  assert.equal(await contour.getByLabel("Playback timeline").count(), 0);
+  await contour.getByLabel("Playback timeline").waitFor();
+  assert.equal(await page.getByRole("button", { name: "Contour 1 · Main machining", exact: true }).getAttribute("aria-description"), "Toolpath valid");
   await generate.click();
   await contour.getByLabel("Playback timeline").waitFor();
   assert.equal((await snapshot()).meshes.length, 2);
@@ -800,6 +813,12 @@ try {
   console.log("ok  Circular and island adaptive clearing, fitted helical entry, stock-aware links, TIP playback and CAM round trip");
   await page.getByRole("button", { name: "Pocket 4 · Main machining", exact: true }).click();
   await edgePocket.getByText(`${model.outer.length} boundary edges · ${model.inner.length} island edges`).waitFor();
+  await edgePocket.getByLabel("Clearance (mm)").fill("3");
+  await waitForCamBuild();
+  await properties.getByText("Toolpath stale", { exact: true }).waitFor();
+  assert.equal(await edgePocket.getByLabel("Playback timeline").count(), 0);
+  await generateAll(5);
+  await edgePocket.getByLabel("Playback timeline").waitFor();
   assert.ok(Math.abs(Number(await edgePocket.getByLabel("Depth (mm)").inputValue()) - (model.top - model.z)) < 1e-6);
   await toolsTab.click();
   await position.click();

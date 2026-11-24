@@ -17,6 +17,59 @@
   flex: none;
 }
 
+.cam-timeline__folder {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+}
+
+.cam-timeline__folder--open {
+  min-height: 38px;
+  padding: 0 4px;
+  border-radius: var(--r-2);
+  box-shadow: inset 0 0 0 1px var(--line);
+  background: color-mix(in oklch, var(--accent) 6%, transparent);
+}
+
+.cam-timeline__folder .folder.is-open {
+  margin-right: 0;
+  border-style: solid;
+  border-color: transparent;
+  background: transparent;
+}
+
+.cam-timeline__folder .folder.is-open:hover {
+  border-color: var(--line);
+}
+
+.cam-timeline__folder .folder > svg {
+  flex: none;
+}
+
+.cam-timeline__drop-end {
+  flex: 1 0 16px;
+  align-self: stretch;
+}
+
+.cam-drop--before {
+  box-shadow: inset 2px 0 var(--accent);
+}
+
+.cam-drop--after {
+  box-shadow: inset -2px 0 var(--accent);
+}
+
+.cam-drop--inside {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.cam-drop--blocked {
+  outline: 1px dashed var(--danger);
+  outline-offset: -1px;
+}
+
 .cam-properties {
   padding: 0.75rem;
 }
@@ -158,3 +211,19 @@
 
 .cam-contour__legend span:nth-child(2)::before { border-top: 3px solid #12b9bd; }
 .cam-contour__legend span:nth-child(3)::before { border-color: #ec9d36; }
+
+.cam-toolpath-dot {
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.cam-toolpath-dot--missing { opacity: 0.3; }
+.cam-toolpath-dot--valid { background: #36a568; }
+.cam-toolpath-dot--stale { background: #e5a230; }
+.cam-toolpath-dot--generating { background: #478bed; }
+.cam-toolpath-dot--failed { background: #e35858; }
+.cam-toolpath-status { text-transform: capitalize; }

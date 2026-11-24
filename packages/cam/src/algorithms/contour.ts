@@ -1,4 +1,4 @@
-import { CAM_WORLD, dot, isCamFrame, transformCamVector, unit as unitVector, type CamFrame, type CamVector } from "../geometry/frames";
+import { CAM_WORLD, cross as cross3, dot, subtract, isCamFrame, transformCamVector, unit as unitVector, type CamFrame, type CamVector } from "../geometry/frames";
 import { CAM_LENGTH_TOLERANCE } from "../toolpath/validation";
 import type { CamMotion } from "../toolpath/model";
 import type { CamResult, ContourMillingSettings, MillingDepthSettings } from "../model";
@@ -276,8 +276,17 @@ export interface ContourEditHandle {
   project(point: CamVector): { value: number; position: CamVector; traceFrom: CamVector };
 }
 
-export interface ContourPreview {
-  readonly contourHandles?: readonly ContourEditHandle[];
+type ContourHandleSpec = {
+  readonly sketch: CamFrame;
+  readonly depth: number;
+} & (
+  | { readonly key: "seam"; readonly point: ContourPoint; readonly center: readonly ContourCurve[]; readonly clearance: number }
+  | { readonly key: "leadIn" | "leadOut"; readonly endpoint: ContourPoint; readonly direction: ContourPoint; readonly extension: number }
+);
+
+export interface ContourPreviewData {
+  readonly handles?: readonly ContourHandleSpec[];
+  readonly segmentLengths: readonly number[];
   readonly programmed: readonly CamVector[];
   readonly adaptiveTransitionCuts?: number;
   readonly stayDownLinkCount?: number;
@@ -296,7 +305,101 @@ export interface ContourPreview {
   readonly frame: CamFrame;
   /** Physical TIP orientation in world coordinates. */
   readonly toolFrame: CamFrame;
+}
+
+export interface ContourPreview extends ContourPreviewData {
+  readonly contourHandles?: readonly ContourEditHandle[];
   pointAt(progress: number): CamVector;
+}
+
+function editHandle(spec: ContourHandleSpec): ContourEditHandle {
+  const { sketch, depth, key } = spec;
+  const at = (p: ContourPoint, z = depth) => transformCamVector([p[0], p[1], z], sketch, CAM_WORLD, "point");
+  const planar = (p: CamVector): ContourPoint => {
+    const [x, y] = transformCamVector(p, CAM_WORLD, sketch, "point");
+    return [x, y];
+  };
+  if (key === "seam") {
+    const { point, center, clearance } = spec;
+    const lengths = center.map(curveLength);
+    const total = lengths.reduce((sum, value) => sum + value, 0);
+    return {
+      key, position: at(point), normal: sketch.z, traceFrom: at(point, clearance),
+      project(world) {
+        const p = planar(world);
+        let best = Infinity, along = 0, selected = point, fraction = 0;
+        for (const [i, curve] of center.entries()) {
+          const u = parameter(curve, p);
+          for (const candidate of [0, 1, Math.max(0, Math.min(1, u))]) {
+            const q = contourPoint(curve, candidate);
+            const error = length(sub(p, q));
+            if (error >= best) continue;
+            best = error;
+            selected = q;
+            fraction = (along + lengths[i]! * candidate) / total;
+          }
+          along += lengths[i]!;
+        }
+        return { value: fraction === 1 ? 0 : fraction, position: at(selected), traceFrom: at(selected, clearance) };
+      },
+    };
+  }
+  const { endpoint, direction, extension } = spec;
+  const traceFrom = at(endpoint);
+  return {
+    key, position: at(add(endpoint, scale(direction, extension))), normal: sketch.z, traceFrom,
+    project(world) {
+      const projected = dot2(sub(planar(world), endpoint), direction);
+      const value = projected > EPS ? projected : 0;
+      return { value, position: at(add(endpoint, scale(direction, value))), traceFrom };
+    },
+  };
+}
+
+function motionPoint(motion: CamMotion, t: number): CamVector {
+  if (t <= 0) return motion.start;
+  if (t >= 1) return motion.end;
+  const { start, end } = motion;
+  if (motion.kind === "line") return [
+    start[0] + t * (end[0] - start[0]),
+    start[1] + t * (end[1] - start[1]),
+    start[2] + t * (end[2] - start[2]),
+  ];
+  const radial = subtract(start, motion.center);
+  const target = subtract(end, motion.center);
+  const normal = motion.normal;
+  const tangent = cross3(normal, radial);
+  const angle = Math.atan2(dot(tangent, target), dot(radial, target));
+  const sweep = motion.direction === "ccw" ? ccw(angle) : -ccw(-angle);
+  const axial = motion.helical ? dot(target, normal) : 0;
+  const cos = Math.cos(sweep * t), sin = Math.sin(sweep * t);
+  const coordinate = (i: 0 | 1 | 2) => motion.center[i] + radial[i] * cos + tangent[i] * sin + normal[i] * axial * t;
+  return [coordinate(0), coordinate(1), coordinate(2)];
+}
+
+export function restoreContourPreview(data: ContourPreviewData): ContourPreview {
+  let total = 0;
+  const ends = data.segmentLengths.map((length) => total += length);
+  return {
+    ...data,
+    contourHandles: data.handles?.map(editHandle),
+    pointAt(progress) {
+      const distance = Math.max(0, Math.min(1, progress)) * total;
+      let lo = 0, hi = ends.length - 1;
+      while (lo < hi) {
+        const mid = Math.floor((lo + hi) / 2);
+        if (ends[mid]! < distance) lo = mid + 1;
+        else hi = mid;
+      }
+      const length = data.segmentLengths[lo]!;
+      const t = distance >= ends[lo]! ? 1 : (distance - (ends[lo - 1] ?? 0)) / length;
+      return transformCamVector(motionPoint(data.motions[lo]!, t), data.frame, CAM_WORLD, "point");
+    },
+  };
+}
+
+export function contourPreviewData({ contourHandles, pointAt, ...data }: ContourPreview): ContourPreviewData {
+  return data;
 }
 
 export function planMillingDepths(
@@ -465,54 +568,16 @@ export function generateContour(
   const preview = buildPlanarPreview([programmed], ordered, cuts, sketch, setup, depths.value, clearance, undefined, stayDown, outputFrame);
   if (!preview.ok) return preview;
   const depth = depths.value.at(-1)!;
-  const at = (p: ContourPoint, z = depth) => transformCamVector([p[0], p[1], z], sketch, CAM_WORLD, "point");
-  const planar = (p: CamVector): ContourPoint => {
-    const [x, y] = transformCamVector(p, CAM_WORLD, sketch, "point");
-    return [x, y];
-  };
-  const contourHandles: ContourEditHandle[] = [];
-  if (closed) {
-    const point = contourPoint(seamCurve, t);
-    contourHandles.push({
-      key: "seam", position: at(point), normal: sketch.z, traceFrom: at(point, clearance),
-      project(world) {
-        const p = planar(world);
-        let best = Infinity, along = 0, selected = point, fraction = 0;
-        for (const [i, curve] of center.entries()) {
-          const u = parameter(curve, p);
-          // Outside an arc's angular range the closer of its endpoints wins.
-          for (const candidate of [0, 1, Math.max(0, Math.min(1, u))]) {
-            const q = contourPoint(curve, candidate);
-            const error = length(sub(p, q));
-            if (error >= best) continue;
-            best = error;
-            selected = q;
-            fraction = (along + lengths[i]! * candidate) / total;
-          }
-          along += lengths[i]!;
-        }
-        return { value: fraction === 1 ? 0 : fraction, position: at(selected), traceFrom: at(selected, clearance) };
-      },
-    });
-  } else {
-    for (const [key, curve, u, extension] of [
+  const handles: ContourHandleSpec[] = closed
+    ? [{ key: "seam", sketch, depth, point: contourPoint(seamCurve, t), center, clearance }]
+    : ([
       ["leadIn", first, 0, leadIn], ["leadOut", last, 1, leadOut],
-    ] as const) {
-      const endpoint = contourPoint(curve, u);
-      const direction = scale(tangent(curve, u), u === 0 ? -1 : 1);
-      const traceFrom = at(endpoint);
-      contourHandles.push({
-        key, position: at(add(endpoint, scale(direction, extension))), normal: sketch.z, traceFrom,
-        project(world) {
-          const projected = dot2(sub(planar(world), endpoint), direction);
-          const value = projected > EPS ? projected : 0;
-          return { value, position: at(add(endpoint, scale(direction, value))), traceFrom };
-        },
-      });
-    }
-  }
+    ] as const).map(([key, curve, u, extension]) => ({
+      key, sketch, depth, extension, endpoint: contourPoint(curve, u),
+      direction: scale(tangent(curve, u), u === 0 ? -1 : 1),
+    }));
   const stayDownLinkCount = stayDown && stayDown.filter(Boolean).length * depths.value.length;
-  return { ok: true, value: { ...preview.value, contourHandles, stayDownLinkCount } };
+  return { ok: true, value: restoreContourPreview({ ...contourPreviewData(preview.value), handles, stayDownLinkCount }) };
 }
 
 export interface HelixEntry {
@@ -556,12 +621,11 @@ export function buildPlanarPreview(
   const entryPaths: CamVector[][] = [];
   const linkingMoves: [CamVector, CamVector][] = [];
   const cuttingPasses: CamVector[][] = [];
-  const segments: { start: number; end: number; length: number; point(t: number): CamVector }[] = [];
+  const segmentLengths: number[] = [];
   let travel = 0;
-  function append(motion: CamMotion, length: number, point: (t: number) => CamVector) {
-    const start = travel;
+  function append(motion: CamMotion, length: number) {
     travel += length;
-    segments.push({ start, end: travel, length, point });
+    segmentLengths.push(length);
     if (outputFrame === setup) {
       motions.push(motion);
     } else {
@@ -575,8 +639,7 @@ export function buildPlanarPreview(
     const span = Math.hypot(...delta);
     if (span <= CAM_LENGTH_TOLERANCE && start[2] === end[2]) return;
     linkingMoves.push([world(start), world(end)]);
-    append({ kind: "line", mode, start, end, toolAxis }, span,
-      (t) => [start[0] + t * delta[0]!, start[1] + t * delta[1]!, start[2] + t * delta[2]!]);
+    append({ kind: "line", mode, start, end, toolAxis }, span);
   }
   const chains = cuts.map((cut) => ({
     cut,
@@ -626,7 +689,7 @@ export function buildPlanarPreview(
             const point = (t: number) => t === 0 ? at(a, z) : t === 1 ? at(b, nextZ)
               : at(contourPoint(arc, t), z + (nextZ - z) * t);
             append({ kind: "arc", helical: true, start: point(0), end: point(1), center: at(entry.center, z),
-              normal: toolAxis, toolAxis, direction: entry.direction }, Math.hypot(Math.PI * radius, nextZ - z), point);
+              normal: toolAxis, toolAxis, direction: entry.direction }, Math.hypot(Math.PI * radius, nextZ - z));
             for (let j = 1; j <= count; j++) trace.push(world(point(j / count)));
           }
           entryPaths.push(trace);
@@ -640,7 +703,7 @@ export function buildPlanarPreview(
         const endpoints = { start: point(0), end: point(1), toolAxis };
         const motion: CamMotion = curve.kind === "line" ? { ...endpoints, kind: "line", mode: "feed" }
           : { ...endpoints, kind: "arc", center: at(curve.c, height), normal: toolAxis, direction: curve.sweep > 0 ? "ccw" : "cw" };
-        append(motion, curveLength(curve), point);
+        append(motion, curveLength(curve));
       }
       cuttingPasses.push(sample(cut, height));
       previous = end;
@@ -651,22 +714,10 @@ export function buildPlanarPreview(
   if (!Number.isFinite(travel)) return fail("The requested depths or travel are too large.");
   const programmedPaths = boundaries.map((boundary) => sample(boundary, 0));
   return {
-    ok: true, value: {
+    ok: true, value: restoreContourPreview({
       programmed: programmedPaths[0]!, programmedPaths,
       centerline: cuts.length === 1 && centerline === cuts[0] ? cuttingPasses.at(-1)! : sample(centerline, depths.at(-1)!),
-      cuttingPasses, entryPaths, linkingMoves, motions, length: travel, frame: outputFrame, toolFrame: setup,
-      pointAt(progress) {
-        const distance = Math.max(0, Math.min(1, progress)) * travel;
-        let lo = 0, hi = segments.length - 1;
-        while (lo < hi) {
-          const mid = Math.floor((lo + hi) / 2);
-          if (segments[mid]!.end < distance) lo = mid + 1;
-          else hi = mid;
-        }
-        const segment = segments[lo]!;
-        const t = distance >= segment.end ? 1 : (distance - segment.start) / segment.length;
-        return world(segment.point(t));
-      },
-    },
+      cuttingPasses, entryPaths, linkingMoves, motions, segmentLengths, length: travel, frame: outputFrame, toolFrame: setup,
+    }),
   };
 }

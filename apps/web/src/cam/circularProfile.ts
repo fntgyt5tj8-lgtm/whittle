@@ -1,14 +1,14 @@
-import { generateCircularProfile, transformCamVector, type CamFrame, type CamResult, type CircularProfileGeometry, type CircularProfileSettings } from "@whittle/cam";
+import { transformCamVector, type CircularProfile, type CamFrame, type CamResult, type CircularProfileGeometry, type CircularProfileSettings } from "@whittle/cam";
 import { machiningPlane } from "./orientation";
 
-export function buildCircularProfile(
+export function prepareCircularProfile(
   geometry: CircularProfileGeometry | undefined,
   frame: CamFrame | undefined,
   toolDiameter: number | undefined,
   settings: CircularProfileSettings | undefined,
   resolveOrientation: (frame: CamFrame, sketch: CamFrame) => CamResult<CamFrame> | undefined,
   validateReferences: () => readonly string[],
-) {
+): CamResult<CircularProfile> {
   if (!geometry) return { ok: false, errors: ["The profile sketch is unavailable."] } as const;
   if (!frame) return { ok: false, errors: ["The context coordinate system is unavailable."] } as const;
   const errors = validateReferences();
@@ -24,10 +24,10 @@ export function buildCircularProfile(
     geometry = { ...geometry, center: [x, y], operationFrame: local.value };
   }
 
-  return generateCircularProfile({
+  return { ok: true, value: {
     geometry, workpieceCsys: frame, tool: { kind: "flat-endmill", diameter: toolDiameter ?? Number(settings?.diameter) },
     side: settings?.side ?? "outside", direction: settings?.direction ?? "ccw",
     depth: Number(settings?.depth), clearance: Number(settings?.clearance),
     feed: Number(settings?.feed), plungeFeed: Number(settings?.plungeFeed),
-  });
+  } };
 }

@@ -60,7 +60,10 @@ export function useHistoryMarker(end: number, setRollback: (to: number) => void)
       const rect = step.getBoundingClientRect();
       return x < rect.left + rect.width / 2;
     });
-    return index === -1 ? steps.length : index;
+    const candidate = steps[index];
+    if (candidate) return Number(candidate.dataset.historyIndex ?? index);
+    const last = steps.at(-1);
+    return last?.dataset.historyEnd === undefined ? steps.length : Number(last.dataset.historyEnd);
   }
 
   function startDrag(event: React.PointerEvent) {
@@ -105,7 +108,7 @@ export function HistoryMenu({ x, y, name, suppressed, actions, close, pickedCoun
   name: string;
   suppressed?: boolean;
   pickedCount?: number;
-  actions: Record<"edit" | "suppress" | "rename" | "earlier" | "later" | "copy" | "folder" | "rollback" | "delete", Action>;
+  actions: { paste?: Action } & Record<"edit" | "suppress" | "rename" | "earlier" | "later" | "copy" | "folder" | "rollback" | "delete", Action>;
   close: () => void;
 }) {
   useMenuDismiss(true, close);
@@ -116,13 +119,14 @@ export function HistoryMenu({ x, y, name, suppressed, actions, close, pickedCoun
     node.style.left = `${Math.max(8, Math.min(x, window.innerWidth - node.offsetWidth - 8))}px`;
     node.style.top = `${Math.max(8, Math.min(y - 8, window.innerHeight - 8) - node.offsetHeight)}px`;
   });
-  const items: [keyof typeof actions, IconName, string][] = [
+  const items: (readonly [keyof typeof actions, IconName, string])[] = [
     ["edit", "edit", "Edit"],
     ["suppress", "suppress", suppressed ? "Turn back on" : "Turn off (suppress)"],
     ["rename", "edit", "Rename"],
     ["earlier", "arrowLeft", "Move earlier"],
     ["later", "arrowRight", "Move later"],
     ["copy", "copy", pickedCount > 1 ? `Copy ${pickedCount} steps` : "Copy"],
+    ...(actions.paste ? [["paste", "copy", "Paste"] as const] : []),
     ["folder", "folder", pickedCount > 1 ? `Put in a folder (${pickedCount} steps)` : "Put in a folder"],
     ["rollback", "rollback", "Roll back to before this"],
     ["delete", "trash", "Delete"],
@@ -131,7 +135,7 @@ export function HistoryMenu({ x, y, name, suppressed, actions, close, pickedCoun
     <div ref={menu} className="menu" style={{ transform: "none" }} role="menu" onPointerDown={(e) => e.stopPropagation()}>
       <div className="menu__title">{name}</div>
       {items.map(([key, icon, label]) => {
-        const { run, reason } = actions[key];
+        const { run, reason } = actions[key]!;
         return (
           <button key={key} role="menuitem" className={key === "delete" ? "danger" : undefined}
             disabled={!run || !!reason} title={reason} onClick={() => { close(); run?.(); }}>

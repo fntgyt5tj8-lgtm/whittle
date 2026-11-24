@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import {
-  CAM_WORLD, plannedOperations, contourTravel, exportAptProgram, type AptOperation, type CamWorkpieceContext, addProcess, addSetup, getProcessPlan, validateOperationTooling, validateProject,
+  plannedOperations, contourTravel, exportAptProgram, type AptOperation, addProcess, addSetup, getProcessPlan, validateProject,
   type CamCuttingConditions, type CamGeometryRef, type CamMachiningStage, type CamPlanItem, type CamProcess, type CamProject, type CamSetup, type CircularProfileSettings, type ContourMillingSettings, type FacingMillingSettings, type PocketMillingSettings,
 } from "@whittle/cam";
 import type { CamCadAdapter } from "../cadAdapter";
@@ -9,9 +9,9 @@ import { uid } from "@whittle/core";
 import { SetupEditor } from "./SetupEditor";
 import { ContourMilling } from "./ContourMilling";
 import { OperationOrientation } from "./OperationOrientation";
-import { resolveOrientation } from "../orientation";
-import { generateMilling } from "../milling";
-import { buildCircularProfile } from "../circularProfile";
+import { workpieceFrame } from "../toolpathInputs";
+import { useToolpathGeneration } from "../useToolpathGeneration";
+import { useApp } from "../../state/store";
 import { downloadApt } from "../downloadApt";
 import { ProfileExport } from "./ProfileExport";
 import { MillIcon } from "./icons/MillIcon";
@@ -59,14 +59,10 @@ export function useCamWorkspace(
   const selectContext = (id?: string) => setContextSelection({ documentId, setupId: setup?.id, id });
   const usedContexts = new Set(project.processes.filter((item) => item.setupId === setup?.id).map((item) => item.contextId));
   const setupInUse = !!usedContexts.size || plan.some((item) => item.kind !== "process" && item.setupId === setup?.id);
-  function frameFor(workpiece?: CamWorkpieceContext) {
-    const frame = workpiece?.frame;
-    if (frame?.kind === "native") return cad.resolveCoordinateSystem(frame.csysId);
-    if (frame?.kind === "legacy-world") return CAM_WORLD;
-    if (frame?.kind === "legacy-sketch" && frame.sketch) return cad.resolveSketchFrame(frame.sketch);
-  }
+  const resolveFrame = () => workpieceFrame(cad, context);
+  const generation = useToolpathGeneration(cad, documentId, project);
+  const toolpath = process && generation.get(process.id);
 
-  const resolveFrame = () => frameFor(context);
 
   function editSetup(update: (current: CamSetup) => CamSetup, label: string, mergeKey?: string) {
     setProject((current) => ({
@@ -282,17 +278,6 @@ export function useCamWorkspace(
   for (const item of project.processes) {
     if (item.contour && !cad.resolveGeometry(item.contour)) errors.push(`${item.name} references a missing profile sketch.`);
   }
-  const contextErrors = (workpiece = context) => (workpiece?.bodies ?? []).flatMap(({ body, role }) =>
-    cad.resolveGeometry(body) ? [] : [`The ${role} body (${body.entityId}) is unavailable.`]);
-  const referenceErrors = () => [...(process ? validateOperationTooling(process, tools) : []), ...contextErrors()];
-  const operationErrors = () => [
-    ...referenceErrors(),
-    ...(operationTool && !cad.resolveCoordinateSystem(operationTool.tipCsysId) ? ["Resolve the selected tool's TIP before exporting."] : []),
-    ...(operationTool && toolDiameter === undefined
-      ? cutting?.ok ? ["Circular profile export requires a FLAT cutter."]
-        : cutting?.errors ?? ["The selected cutting component is unavailable."]
-      : []),
-  ];
   for (const item of project.setups.flatMap((item) => item.contexts ?? [])) {
     if (item.frame.kind === "native" && item.frame.csysId) {
       const csysId = item.frame.csysId;
@@ -307,15 +292,20 @@ export function useCamWorkspace(
   }
 
   const [aptError, setAptError] = useState<{ project: CamProject; selection: typeof selectedKey; errors: readonly string[] }>();
-  function exportOperations(items: readonly CamProcess[], filename: string) {
+  async function exportOperations(items: readonly CamProcess[], filename: string) {
     const fail = (errors: readonly string[]) => setAptError({ project, selection: selectedKey, errors });
     const operations: AptOperation[] = [];
-    for (const item of items) {
+    const results = await Promise.all(items.map(({ id }) => generation.generate(id)));
+    if (useApp.getState().doc !== generation.doc) return;
+    for (const [index, item] of items.entries()) {
+      const result = results[index];
+      if (!result) return fail([`${item.name}: Toolpath generation was interrupted. Try again once the geometry is ready.`]);
+      if (!result.ok) return fail(result.errors.map((error) => `${item.name}: ${error}`));
+      const { path, diameter, profile: profilePath } = result.value;
       const workpiece = contexts.find(({ id }) => id === item.contextId);
-      const frame = frameFor(workpiece);
+      const frame = workpieceFrame(cad, workpiece);
       if (!frame) return fail([`${item.name}: Resolve the workpiece coordinate system.`]);
       const tool = tools.find(({ id }) => id === item.toolPositionId);
-      const references = [...validateOperationTooling(item, tools), ...contextErrors(workpiece)];
       const settings = item.facingMilling ?? item.pocketMilling ?? item.contourMilling;
       const profile = item.profile;
       const conditions = settings ? item.cuttingConditions : profile;
@@ -324,9 +314,6 @@ export function useCamWorkspace(
         spindleRpm: conditions?.spindleRpm?.trim() ? Number(conditions.spindleRpm) : undefined,
       };
       if (settings) {
-        const generated = generateMilling(cad, documentId, item, settings, tool, frame, references);
-        if (!generated.ok) return fail(generated.errors.map((error) => `${item.name}: ${error}`));
-        const { path, diameter } = generated.value;
         const contour = item.contourMilling;
         const travelSide = contour && contourTravel(contour).side;
         const cutcom = contour?.aptCutcom && travelSide !== "center" ? travelSide : undefined;
@@ -342,17 +329,8 @@ export function useCamWorkspace(
           tool: { kind: "flat-endmill", diameter }, motions: path.motions,
           feed: Number(conditions?.feed), plungeFeed: Number(conditions?.plungeFeed),
         } });
-      } else {
-        const cutting = tool && cad.resolveToolCutting?.(tool.id);
-        if (tool && (!cutting?.ok || cutting.value.family !== "FLAT" || !cad.resolveCoordinateSystem(tool.tipCsysId))) {
-          return fail([`${item.name}: Resolve the assigned tool's FLAT cutter and TIP.`]);
-        }
-        const path = buildCircularProfile(item.contour && cad.resolveCircularProfile?.(item.contour), frame,
-          cutting?.ok ? cutting.value.diameter : undefined, profile,
-          (setup, sketch) => item.orientation ? resolveOrientation(cad, documentId, setup, item.orientation, sketch) : undefined,
-          () => references);
-        if (!path.ok) return fail(path.errors.map((error) => `${item.name}: ${error}`));
-        operations.push({ ...metadata, path: path.value });
+      } else if (profilePath) {
+        operations.push({ ...metadata, path: profilePath });
       }
     }
     const apt = exportAptProgram(filename, operations);
@@ -362,11 +340,21 @@ export function useCamWorkspace(
   }
   const setupOperations = setup ? plannedOperations(project, setup.id) : [];
   const operationActive = !!process && setupOperations.includes(process);
+  const batch = generation.progress;
+  const batchRunning = !!batch && batch.done < batch.total;
 
   const properties = (
     <div className="cam-properties">
       <h2>{process?.name ?? (selectedStage && stageLabels[selectedStage.kind]) ?? (setup ? "PART1" : manufacturingLabel)}</h2>
       <p>{demoMachine.name} · {demoMachine.controller}</p>
+      {batch && <>
+        <p role="status">Toolpaths {batch.done} of {batch.total} processed · {batch.reused} reused
+          {batch.skipped > 0 && ` · ${batch.skipped} interrupted`}</p>
+        {batchRunning && <progress aria-label="Toolpath generation progress" value={batch.done} max={batch.total} />}
+        {batch.failures.length > 0 && <ul role="alert">{batch.failures.map((error, index) => <li key={index}>{error}</li>)}</ul>}
+      </>}
+      {toolpath && <p role="status" className="cam-toolpath-status">Toolpath {toolpath.status}</p>}
+
       <dl>
         {selectedItem && <><dt>Setup</dt><dd>{setup?.name}</dd></>}
         {process && selectedItem?.kind === "process" && <>
@@ -471,7 +459,8 @@ export function useCamWorkspace(
       {process && !operationActive && <p role="status">{process.suppressed ? "This operation is suppressed." : "This operation is after the rollback marker."}</p>}
       {process && millingSettings && canPickGeometry && !pickingGeometry && <ContourMilling
         key={`${documentId}/${process.id}`} cad={cad} process={process} settings={millingSettings} operationActive={operationActive}
-        tool={operationTool} resolveFrame={resolveFrame} validateReferences={referenceErrors} onChange={changeMilling} onGeometryChange={changeModelGeometry} />}
+        resolveFrame={resolveFrame} toolpath={toolpath} computeEdit={generation.computeEdit}
+        onGenerate={(computed) => generation.generate(process.id, useApp.getState().doc, computed)} onChange={changeMilling} onGeometryChange={changeModelGeometry} />}
       {process && millingSettings && canPickGeometry && !pickingGeometry && <>
         <dl>{([
           ["feed", "Cut feed (mm/min)"], ["plungeFeed", "Plunge feed (mm/min)"], ["spindleRpm", "Spindle speed (rpm)"],
@@ -480,18 +469,18 @@ export function useCamWorkspace(
           <dd><input id={`cam-milling-${key}`} type="number" step="any" value={process.cuttingConditions?.[key] ?? ""}
             onChange={(event) => changeCuttingConditions({ [key]: event.target.value })} /></dd>
         </div>)}</dl>
-        <button type="button" disabled={!operationActive} onClick={() => exportOperations([process], process.id)}>Export APT-CL</button>
+        <button type="button" disabled={!operationActive} onClick={() => void exportOperations([process], process.id)}>Export APT-CL</button>
       </>}
       {setup && !selectedItem && !!setupOperations.length &&
-        <button type="button" onClick={() => exportOperations(setupOperations, setup.name)}>Export setup APT-CL</button>}
+        <button type="button" onClick={() => void exportOperations(setupOperations, setup.name)}>Export setup APT-CL</button>}
       {aptError?.project === project && aptError.selection === selectedKey &&
         <ul role="alert">{aptError.errors.map((error, index) => <li key={index}>{error}</li>)}</ul>}
-      {process && !millingSettings && <ProfileExport key={`${documentId}/${process.id}/${process.contour?.entityId ?? ""}/${process.toolPositionId ?? ""}/${toolDiameter ?? ""}`}
-        name={process.id} operationActive={operationActive} settings={process.profile} onChange={changeProfile} resolveFrame={resolveFrame} validateReferences={operationErrors}
-        resolveOrientation={(setup, sketch) => process.orientation
-          ? resolveOrientation(cad, documentId, setup, process.orientation, sketch) : undefined}
-        hasContour={!!process.contour} hasTool={process.toolPositionId !== undefined} toolDiameter={toolDiameter}
-        resolve={() => process.contour && cad.resolveCircularProfile?.(process.contour)} />}
+      {process && !millingSettings && <ProfileExport key={`${documentId}/${process.id}`}
+        name={process.id} operationActive={operationActive} settings={process.profile} onChange={changeProfile}
+        toolpath={toolpath} onGenerate={() => generation.generate(process.id)}
+        previewEnabled={canPickGeometry && !pickingGeometry} hasContour={!!process.contour}
+        hasTool={process.toolPositionId !== undefined} toolDiameter={toolDiameter}
+        geometryAvailable={!!(process.contour && cad.resolveCircularProfile?.(process.contour))} />}
       {setup && !selectedItem && <SetupEditor key={`${documentId}/${setup.id}`}
         setup={setup} cad={cad} edit={editSetup} select={selectContext} removeContext={removeContext}
         deleteSetup={deleteSetup} setupInUse={setupInUse} usedContexts={usedContexts} />}
@@ -502,7 +491,7 @@ export function useCamWorkspace(
   );
 
   const timeline = <CamTimeline key={documentId} project={project} selectedKey={selectedKey}
-    setupId={setup?.id} select={selectTile} save={setProject} />;
+    setupId={setup?.id} toolpathStatus={(id) => generation.get(id).status} select={selectTile} save={setProject} />;
 
-  return { commands, properties, timeline, pickingSketch, pickingFace: pickingFace || pickingFacingFace };
+  return { commands, properties, timeline, batch, batchRunning, generateAll: generation.generateAll, hasOperations: !!generation.active.length, pickingSketch, pickingFace: pickingFace || pickingFacingFace };
 }

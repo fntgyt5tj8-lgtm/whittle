@@ -1,7 +1,8 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { contourTravel, type CamBoundaryEdge, type CamFrame, type CamProcess, type CamToolPosition, type ContourMillingSettings, type FacingMillingSettings, type PocketMillingSettings } from "@whittle/cam";
+import { contourTravel, type CamBoundaryEdge, type CamFrame, type CamProcess, type ContourMillingSettings, type FacingMillingSettings, type PocketMillingSettings } from "@whittle/cam";
 import { type CamContourPlayback, useApp } from "../../state/store";
-import { generateMilling, millingGeometry } from "../milling";
+import { millingGeometry } from "../milling";
+import type { ComputedToolpath, ToolpathCache } from "../toolpathCache";
 import type { CamCadAdapter } from "../cadAdapter";
 
 interface Props {
@@ -9,35 +10,47 @@ interface Props {
   operationActive: boolean;
   process: CamProcess;
   settings: ContourMillingSettings | PocketMillingSettings | FacingMillingSettings;
-  tool?: CamToolPosition;
+  toolpath?: ReturnType<ToolpathCache["inspect"]>;
+  onGenerate(computed?: ComputedToolpath): Promise<unknown>;
+  computeEdit(process: CamProcess): ComputedToolpath;
   resolveFrame(): CamFrame | undefined;
-  validateReferences(): string[];
   onGeometryChange(changes: Pick<Partial<CamProcess>, "boundaryEdges" | "islandEdges" | "floorFace" | "facingFace" | "contour">): void;
   onChange(settings: Partial<ContourMillingSettings & PocketMillingSettings & FacingMillingSettings>): void;
 }
 
-export function ContourMilling({ cad, process, settings, operationActive, tool, resolveFrame, validateReferences, onChange, onGeometryChange }: Props) {
+export function ContourMilling({ cad, process, settings, operationActive, toolpath, onGenerate, computeEdit, resolveFrame, onChange, onGeometryChange }: Props) {
   const adaptive = process.kind === "adaptive";
   const facing = "strategy" in settings;
   const label = facing ? "Facing milling" : adaptive ? "Adaptive clearing" : "stepover" in settings ? "Pocket milling" : "Contour milling";
   const doc = useApp((s) => s.doc);
-  const [attempt, setAttempt] = useState<{ doc: typeof doc; errors: readonly string[] }>();
+  const cached = operationActive && toolpath?.status === "valid" ? toolpath.value : undefined;
   const playback = useApp((s) => s.camContourPlayback?.doc === s.doc ? s.camContourPlayback : null);
+  const preserveCamera = useRef(false);
+  const display = useRef<Pick<CamContourPlayback, "showTool" | "showCenterline">>({ showTool: true });
   const editRef = useRef<NonNullable<CamContourPlayback["editContour"]>>(() => {});
   useLayoutEffect(() => () => {
     useApp.setState({ camContourPlayback: null, camContourProgress: 0 });
   }, []);
   const [progress, setProgress] = useState(0);
   const [playing, setPlaying] = useState(false);
+  const [editError, setEditError] = useState<{ doc: typeof doc; errors: readonly string[] }>();
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     setPlaying(false);
     setProgress(0);
-    const state = useApp.getState();
-    if (state.camContourPlayback && state.camContourPlayback.doc !== doc) {
-      useApp.setState({ camContourPlayback: null, camContourProgress: 0 });
-    }
-  }, [doc]);
+    const previous = useApp.getState().camContourPlayback;
+    if (previous) display.current = { showTool: previous.showTool, showCenterline: previous.showCenterline };
+    useApp.setState({
+      camContourProgress: 0,
+      camContourPlayback: cached ? {
+        doc, path: cached.path, tip: cached.tip, ids: cached.ids,
+        ...display.current,
+        preserveCamera: preserveCamera.current,
+        editContour: (key, value) => editRef.current(key, value),
+      } : null,
+    });
+    if (cached) preserveCamera.current = false;
+  }, [cached, doc]);
 
   function seek(value: number) {
     setProgress(value);
@@ -72,29 +85,21 @@ export function ContourMilling({ cad, process, settings, operationActive, tool, 
   }
   function generate(changes?: Partial<ContourMillingSettings>, drag = false) {
     if (useApp.getState().doc !== doc) return;
-    if (!operationActive) {
-      if (changes) onChange(changes);
+    setEditError(undefined);
+    const computed = drag && operationActive && process.contourMilling
+      ? computeEdit({ ...process, contourMilling: { ...process.contourMilling, ...changes } }) : undefined;
+    if (computed && !computed.result.ok) {
+      setEditError({ doc, errors: computed.result.errors });
       return;
     }
+    if (changes) {
+      preserveCamera.current = true;
+      onChange(changes);
+    }
+    if (!operationActive) return;
     setPlaying(false);
     seek(0);
-    const effective = changes ? { ...settings, ...changes } : settings;
-    const generated = generateMilling(cad, doc.id, process, effective, tool, resolveFrame(), validateReferences());
-    if (!generated.ok) {
-      if (changes && !drag) onChange(changes);
-      if (!drag) useApp.setState({ camContourPlayback: null });
-      setAttempt({ doc: useApp.getState().doc, errors: generated.errors });
-      return;
-    }
-    if (changes) onChange(changes);
-    setAttempt(undefined);
-    const preview: CamContourPlayback = {
-      doc: useApp.getState().doc, ...generated.value,
-      showTool: playback?.showTool ?? true, showCenterline: playback?.showCenterline,
-      preserveCamera: !!changes,
-      editContour: (key, value) => editRef.current(key, value),
-    };
-    useApp.setState({ camContourPlayback: preview });
+    void onGenerate(computed);
   }
 
   editRef.current = (key, value) => generate({ [key]: String(value) }, true);
@@ -223,7 +228,7 @@ export function ContourMilling({ cad, process, settings, operationActive, tool, 
             if (key === "stepdown") onChange({ stepdown: event.target.value });
             else {
               const change = { [key]: event.target.value };
-              if (playback || attempt?.doc === doc) generate(change);
+              if (playback || toolpath?.status === "failed" || preserveCamera.current) generate(change);
               else onChange(change);
             }
           }} /></dd>
@@ -233,7 +238,7 @@ export function ContourMilling({ cad, process, settings, operationActive, tool, 
         <dd><input id="cam-contour-seam" type="number" min="0" max="1" step="any"
           value={settings.seam ?? "0"} onChange={(event) => {
             const change = { seam: event.target.value };
-            if (playback || attempt?.doc === doc) generate(change);
+            if (playback || toolpath?.status === "failed" || preserveCamera.current) generate(change);
             else onChange(change);
           }} /></dd>
       </Fragment>}
@@ -246,7 +251,7 @@ export function ContourMilling({ cad, process, settings, operationActive, tool, 
     {facing && <p>Facing sweeps the full bounding rectangle, including outside the selected surface. Use one closed loop with room for cutter overtravel.</p>}
     {!facing && "stepover" in settings && <p>Nested loops and added island sketches define areas to leave uncut.</p>}
     <div className="cam-properties__actions">
-      <button type="button" disabled={!operationActive} onClick={() => generate()}>Generate toolpath</button>
+      <button type="button" disabled={!operationActive || toolpath?.status === "generating"} onClick={() => generate()}>Generate toolpath</button>
       <button type="button" disabled={!playback} onClick={() => {
         if (!playing && progress >= 1) seek(0);
         setPlaying(!playing);
@@ -259,7 +264,8 @@ export function ContourMilling({ cad, process, settings, operationActive, tool, 
         Reset entry and exit
       </button>}
     </div>
-    {attempt?.doc === doc && <ul role="alert">{attempt.errors.map((error) => <li key={error}>{error}</li>)}</ul>}
+    {editError?.doc === doc && <ul role="alert">{editError.errors.map((error) => <li key={error}>{error}</li>)}</ul>}
+    {toolpath?.status === "failed" && <ul role="alert">{toolpath.errors.map((error) => <li key={error}>{error}</li>)}</ul>}
     {playback && <>
       {playback.path.contourHandles?.some(({ key }) => key === "seam") && <p>Drag the blue seam handle to move the start and end along the tool centerline.</p>}
       {playback.path.contourHandles?.some(({ key }) => key !== "seam") && <p>Drag the available green entry or orange exit handles along their endpoint tangents.</p>}
