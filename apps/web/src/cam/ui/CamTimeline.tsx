@@ -52,7 +52,6 @@ export function CamTimeline({ project, selectedKey, setupId, strategies, createS
 }) {
   const setup = project.setups.find(({ id }) => id === setupId);
   const tracks = setup ? executionTracks(setup) : [];
-  const showLabels = useApp((state) => state.prefs.toolLabels);
   const plan = getProcessPlan(project);
   const operations = new Map(project.processes.map((operation) => [operation.id, operation]));
   const steps = plan.flatMap((entry, planIndex) => {
@@ -612,15 +611,21 @@ export function CamTimeline({ project, selectedKey, setupId, strategies, createS
           <HistoryControls end={end} count={activeRow.length} setRollback={setVisibleRollback} />
         </div>
         <div className="cam-timeline__setup-actions">
-          <button className="btn" type="button" onClick={createSetup}>Create setup</button>
-          {setup && <button className="btn" type="button" onClick={addTrack}>Add track</button>}
+          {generationProgress && <span className="cam-timeline__generation-progress" role="status">{generationProgress}</span>}
+          <button className="iconbtn" type="button" aria-label="Create setup" title="Create setup" onClick={createSetup}>
+            <Icon name="folder" size={16} />
+          </button>
+          {setup && <>
+            <button className="iconbtn" type="button" aria-label="Add track" title="Add track" onClick={addTrack}>
+              <Icon name="plus" size={16} />
+            </button>
+            <span className="cam-timeline__action-divider" aria-hidden="true" />
+          </>}
+          <button className="iconbtn" type="button" disabled={generationDisabled}
+            aria-label="Generate All Toolpaths" title="Generate All Toolpaths" onClick={generateAll}>
+            <Icon name="refresh" size={16} />
+          </button>
         </div>
-        <button className="btn cam-timeline__generate" type="button" disabled={generationDisabled}
-          aria-label="Generate All Toolpaths" title="Generate All Toolpaths" onClick={generateAll}>
-          <Icon name="refresh" size={16} />
-          {showLabels && <span className="cam-timeline__generate-label">Generate All</span>}
-          {generationProgress && <span role="status">{generationProgress}</span>}
-        </button>
       </div>
       <div className="cam-timeline__rows" ref={history} role="list" aria-label="Part history">
         {!setup && <span className="timeline__empty">Create a setup to start the part history.</span>}

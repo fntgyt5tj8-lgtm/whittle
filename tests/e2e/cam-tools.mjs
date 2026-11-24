@@ -762,14 +762,22 @@ try {
     await properties.getByText(`Toolpaths 6 of 6 processed · ${reused} reused`, { exact: true }).waitFor();
     return Math.round(performance.now() - start);
   }
-  const labelPreference = await page.evaluate(() => {
-    const { useApp } = window.whittle;
-    const { prefs } = useApp.getState();
-    useApp.setState({ prefs: { ...prefs, toolLabels: false } });
-    return prefs.toolLabels;
-  });
-  await batchButton.locator("svg").waitFor({ state: "visible" });
-  await batchButton.getByText("Generate All", { exact: true }).waitFor({ state: "hidden" });
+  const toolbar = page.getByLabel("Manufacturing timeline");
+  const timelineActions = [
+    toolbar.getByRole("button", { name: "Create setup", exact: true }),
+    toolbar.getByRole("button", { name: "Add track", exact: true }),
+    batchButton,
+  ];
+  const setupSelector = toolbar.getByRole("button", { name: "Timeline setup", exact: true });
+  let previousBox = await setupSelector.boundingBox();
+  for (const [index, action] of timelineActions.entries()) {
+    await action.locator("svg").waitFor({ state: "visible" });
+    assert.equal(await action.textContent(), "");
+    assert.equal(await action.getAttribute("title"), ["Create setup", "Add track", "Generate All Toolpaths"][index]);
+    const box = await action.boundingBox();
+    assert.ok(box.x >= previousBox.x + previousBox.width);
+    previousBox = box;
+  }
   const viewportSize = page.viewportSize();
   await page.setViewportSize({ ...viewportSize, width: 760 });
   const beforePalette = await batchButton.boundingBox();
@@ -782,10 +790,6 @@ try {
   await palette.getByRole("button", { name: "Close insertion palette" }).click();
   await page.setViewportSize(viewportSize);
   const coldMs = await generateAll(0);
-  await page.evaluate((toolLabels) => {
-    const { useApp } = window.whittle;
-    useApp.setState({ prefs: { ...useApp.getState().prefs, toolLabels } });
-  }, labelPreference);
   const warmMs = await generateAll(6);
   const workers = page.workers().filter((worker) => worker.url().includes("toolpath.worker"));
   assert.equal(workers.length, await page.evaluate(() => Math.min(2, navigator.hardwareConcurrency || 1)));

@@ -342,9 +342,7 @@
   flex-wrap: wrap;
 }
 
-.cam-timeline__instructions > *,
-.cam-timeline__generate,
-.cam-timeline__setup-actions > .btn {
+.cam-timeline__instructions > * {
   flex: none;
   white-space: nowrap;
 }
@@ -355,7 +353,6 @@
 }
 
 .cam-timeline__instructions .btn,
-.cam-timeline__controls .btn,
 .cam-timeline__track-label .btn {
   display: inline-flex;
   align-items: center;
@@ -381,33 +378,32 @@
   border-right: 1px solid var(--line-soft);
 }
 
-.cam-timeline__setup-controls:has(.cam-timeline__setup) {
-  padding-inline-end: 4px;
-}
-
 .cam-timeline .cam-timeline__setup-controls > .timeline__controls {
   flex: none;
+  gap: inherit;
   margin: 0;
+  margin-inline-start: auto;
   padding: 0;
   border: 0;
 }
 
 .cam-timeline__setup-actions {
-  flex-wrap: wrap;
-}
-
-.cam-timeline__generate {
+  flex: none;
   margin-inline-start: auto;
 }
 
-@media (max-width: 480px) {
-  .cam-timeline__generate-label {
-    display: none;
-  }
+.cam-timeline__action-divider {
+  height: 16px;
+  border-inline-start: 1px solid var(--line-soft);
+}
+
+.cam-timeline__generation-progress {
+  white-space: nowrap;
 }
 
 @media (max-width: 420px) {
-  .cam-timeline__setup-controls .iconbtn {
+  .cam-timeline__setup-controls .iconbtn,
+  .cam-timeline__track-label .iconbtn {
     width: 24px;
   }
 }
