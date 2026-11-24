@@ -35,12 +35,18 @@ export interface CamWorkpieceContext {
   readonly bodies: readonly CamBodyAssignment[];
 }
 
+export interface CamExecutionTrack {
+  readonly id: string;
+  readonly name: string;
+}
+
 export interface CamSetup {
   readonly id: string;
   readonly name: string;
   /** Phase 01 part reference, retained for sketch selection and compatibility. */
   readonly part?: CamGeometryRef;
   readonly contexts?: readonly CamWorkpieceContext[];
+  readonly executionTracks?: readonly CamExecutionTrack[];
 }
 
 export interface CamCuttingConditions {
@@ -174,7 +180,7 @@ export type CamPlanStage = {
 };
 
 export type CamPlanItem =
-  | { readonly kind: "process"; readonly processId: string; readonly stage: CamMachiningStage }
+  | { readonly kind: "process"; readonly processId: string; readonly stage: CamMachiningStage; readonly trackId?: string }
   | CamPlanStage;
 
 export const CAM_TOOL_COMPONENT_ROLES = ["cutter", "insert", "collet", "holder", "adapter", "other"] as const;

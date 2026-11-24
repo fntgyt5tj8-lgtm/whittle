@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { activePlanEnd, addOperationFolder, pastePlannedOperations, deletePlannedOperation, movePlannedOperation, moveTimelineItems, plannedOperations, rollBackPlan, addPlanStage, addProcess, addSetup, createProject, getProcessPlan, migrateWorkpieceContexts, validateProject, type CamSetup } from "../src";
+import { activePlanEnd, addOperationFolder, pastePlannedOperations, deletePlannedOperation, movePlannedOperation, moveTimelineItems, executionTrackId, insertTimelineOperation, plannedOperations, rollBackPlan, addPlanStage, addProcess, addSetup, createProject, getProcessPlan, migrateWorkpieceContexts, validateProject, type CamSetup } from "../src";
 import { isCamProject } from "../src/validation";
 
 const setup: CamSetup = {
@@ -19,6 +19,45 @@ describe("CAM project", () => {
     expect(prepared.processes).toEqual([]);
     expect(JSON.parse(JSON.stringify(project))).toEqual(project);
     expect(validateProject(project)).toEqual([]);
+  });
+
+  it("inserts into a track without activating previously rolled-back operations", () => {
+    const second = { ...profile, id: "profile-2" };
+    const inserted = { ...profile, id: "inserted" };
+    const project = rollBackPlan(addProcess(addProcess(addSetup(createProject("Job"), setup), profile), second), 1);
+    const target = { operationId: profile.id, side: "before", track: { setupId: setup.id, id: "default" } } as const;
+    const updated = insertTimelineOperation(project, inserted, target);
+    expect(plannedOperations(updated)).toEqual([inserted, profile]);
+    expect(getProcessPlan(updated)[0]).toMatchObject({ processId: inserted.id, trackId: "default" });
+    expect(isCamProject(JSON.parse(JSON.stringify(updated)))).toBe(true);
+  });
+
+  it("uses order in the plan and transfers ownership to an empty track without changing operation data", () => {
+    const trackedSetup = { ...setup, executionTracks: [{ id: "main", name: "Main" }, { id: "finish", name: "Finish" }] };
+    const legacy = { ...profile, track: { unitId: "legacy-unit", id: "legacy-track" } };
+    const second = { ...profile, id: "profile-2" };
+    const project = addProcess(addProcess(addSetup(createProject("Job"), trackedSetup), legacy), second);
+    expect(executionTrackId(trackedSetup)).toBe("main");
+    const finish = { setupId: setup.id, id: "finish" };
+    const moved = moveTimelineItems(project, { operationId: legacy.id }, { side: "after", track: finish });
+    expect(getProcessPlan(moved)[0]).toMatchObject({ processId: legacy.id, trackId: "finish" });
+    expect(plannedOperations(moved)).toEqual([legacy, second]);
+    expect(moved.processes).toBe(project.processes);
+
+    const main = { setupId: setup.id, id: "main" };
+    const reordered = moveTimelineItems(moved, { operationId: legacy.id }, { operationId: second.id, side: "after", track: main });
+    expect(getProcessPlan(reordered)[1]).toMatchObject({ processId: legacy.id, trackId: "main" });
+    expect(plannedOperations(reordered)).toEqual([second, legacy]);
+    expect(isCamProject(JSON.parse(JSON.stringify(reordered)))).toBe(true);
+  });
+
+  it("pastes at a track cursor beyond the rollback boundary without advancing rollback", () => {
+    const second = { ...profile, id: "profile-2" };
+    const copy = { ...profile, id: "profile-copy" };
+    const project = rollBackPlan(addProcess(addProcess(addSetup(createProject("Job"), setup), profile), second), 1);
+    const pasted = pastePlannedOperations(project, [{ stage: "main", operation: copy, trackId: "default" }], 2);
+    expect(plannedOperations(pasted)).toEqual([profile]);
+    expect(getProcessPlan(pasted).at(-1)).toEqual({ kind: "process", processId: copy.id, stage: "main", trackId: "default" });
   });
 
   it("pastes at rollback and keeps folders independent of operation order", () => {

@@ -51,7 +51,7 @@ export function summary(f: Feature, units: string): string {
 }
 
 export function Timeline({ content }: { content?: React.ReactNode }) {
-  return content ? <div className="timeline" aria-label="Manufacturing timeline">{content}</div> : <CadTimeline />;
+  return content ? <div className="timeline cam-timeline" aria-label="Manufacturing timeline">{content}</div> : <CadTimeline />;
 }
 
 function CadTimeline() {

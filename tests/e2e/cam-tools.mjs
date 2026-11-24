@@ -211,7 +211,13 @@ try {
     .find((feature) => feature.name === "Fixture CSYS").id);
   await properties.getByLabel("Context CSYS").selectOption(fixtureId);
   await properties.getByRole("button", { name: "Done", exact: true }).click();
-  await page.getByRole("button", { name: "Add contour milling", exact: true }).click();
+  const insertTile = page.getByRole("button", { name: "Insert instruction", exact: true });
+  const palette = page.getByRole("dialog", { name: "Manufacturing instruction palette" });
+  const insertStrategy = async (name) => {
+    await insertTile.click();
+    await palette.getByRole("button", { name, exact: true }).click();
+  };
+  await insertStrategy("Add contour milling");
   await properties.getByRole("button", { name: /^(Pick|Replace) Sketch$/ }).click();
   await page.getByRole("navigation", { name: "Design browser" })
     .getByRole("button", { name: "Finishing contour", exact: true }).click();
@@ -450,7 +456,7 @@ try {
   assert.equal((await snapshot()).meshes.length, 2);
   console.log("ok  Native contour selection, signed Ø1 compensation, multipass leads and clearance links, complete TIP playback");
 
-  await page.getByRole("button", { name: "Add pocket milling", exact: true }).click();
+  await insertStrategy("Add pocket milling");
   await properties.getByRole("button", { name: /^(Pick|Replace) Sketch$/ }).click();
   await page.getByRole("navigation", { name: "Design browser" })
     .getByRole("button", { name: "Finishing contour", exact: true }).click();
@@ -497,7 +503,7 @@ try {
   await pocket.getByLabel("Playback timeline").press("End");
   assert.ok((await snapshot()).tipError < 1e-6);
 
-  await page.getByRole("button", { name: "Add adaptive clearing", exact: true }).click();
+  await insertStrategy("Add adaptive clearing");
   await properties.getByRole("button", { name: /^(Pick|Replace) Sketch$/ }).click();
   await page.getByRole("navigation", { name: "Design browser" })
     .getByRole("button", { name: "Finishing contour", exact: true }).click();
@@ -549,7 +555,7 @@ try {
   });
   assert.deepEqual(adaptiveIsland, { boundaries: 2, stayDown: true, depths: [9.5, 9], avoidsIsland: true, helical: true, lateralAtClearance: true });
 
-  await page.getByRole("button", { name: "Add pocket milling", exact: true }).click();
+  await insertStrategy("Add pocket milling");
   const edgePocket = properties.getByRole("region", { name: "Pocket milling" });
   const model = await page.evaluate(() => {
     const { useApp } = window.whittle;
@@ -600,7 +606,7 @@ try {
     shapes: [{ type: "circle", x: 4, y: 6, radius: 3 }],
   }));
   await manufacturing.click();
-  await page.getByRole("button", { name: "Add contour milling", exact: true }).click();
+  await insertStrategy("Add contour milling");
   await properties.getByRole("button", { name: /^(Pick|Replace) Sketch$/ }).click();
   await page.getByRole("navigation", { name: "Design browser" })
     .getByRole("button", { name: "Side contour", exact: true }).click();
@@ -675,7 +681,7 @@ try {
   await checkApt(contour, true);
   console.log("ok  Side face machining, reversed IJK and physical TIP alignment");
 
-  await page.getByRole("button", { name: "Add facing milling", exact: true }).click();
+  await insertStrategy("Add facing milling");
   const facing = properties.getByRole("region", { name: "Facing milling" });
   await properties.getByRole("button", { name: "Pick Facing Face", exact: true }).click();
   await page.waitForFunction(() => window.whittle.viewportRef.current.filter.faces);
@@ -766,13 +772,14 @@ try {
   await batchButton.getByText("Generate All", { exact: true }).waitFor({ state: "hidden" });
   const viewportSize = page.viewportSize();
   await page.setViewportSize({ ...viewportSize, width: 760 });
-  const ribbon = page.getByRole("toolbar", { name: "Manufacturing" });
-  const ribbonScroll = ribbon.locator(".toolbar__scroll");
-  assert.equal(await ribbonScroll.evaluate((strip) => strip.scrollWidth > strip.clientWidth), true);
-  const beforeScroll = await batchButton.boundingBox();
-  assert.ok(beforeScroll.x >= 0 && beforeScroll.x + beforeScroll.width <= 760);
-  await ribbonScroll.evaluate((strip) => { strip.scrollLeft = strip.scrollWidth; });
-  assert.deepEqual(await batchButton.boundingBox(), beforeScroll);
+  const beforePalette = await batchButton.boundingBox();
+  assert.ok(beforePalette.x >= 0 && beforePalette.x + beforePalette.width <= 760);
+  await insertTile.click();
+  await palette.waitFor();
+  const box = await palette.boundingBox();
+  assert.ok(box.x >= 0 && box.y >= 0 && box.x + box.width <= 760 && box.y + box.height <= viewportSize.height);
+  assert.deepEqual(await batchButton.boundingBox(), beforePalette);
+  await palette.getByRole("button", { name: "Close insertion palette" }).click();
   await page.setViewportSize(viewportSize);
   const coldMs = await generateAll(0);
   await page.evaluate((toolLabels) => {

@@ -90,7 +90,7 @@ try {
     await setupOptions.getByRole("option", { name, exact: true }).click();
   }
   const history = timeline.getByRole("list", { name: "Part history" });
-  const tiles = history.getByRole("button");
+  const tiles = history.locator("button.step[data-history-step]");
   const tileNames = () => tiles.evaluateAll((buttons) => buttons.map((button) => button.getAttribute("aria-label")));
   assert.equal(await tiles.count(), 0);
 
@@ -163,21 +163,21 @@ try {
   await contextPanel.getByRole("button", { name: "Done" }).click();
   assert.equal(await contextPanel.count(), 0);
 
-  const addProfile = page.getByRole("button", { name: "Add profile" });
-  const track = properties.getByLabel("Execution track");
+  const insertTile = timeline.getByRole("button", { name: "Insert instruction", exact: true });
+  const palette = page.getByRole("dialog", { name: "Manufacturing instruction palette" });
+  const addProfile = palette.getByRole("button", { name: "Add profile", exact: true });
+  const openPalette = () => insertTile.click();
+  const insertProfile = async () => { await openPalette(); await addProfile.click(); };
   const machiningStage = properties.getByLabel("Machining stage");
 
-  await addProfile.click();
+  await insertProfile();
   await properties.getByRole("heading", { name: "Profile 1" }).waitFor();
-  assert.equal(await track.inputValue(), "");
-  await track.selectOption({ label: "Secondary Track · Channel 2" });
-  await properties.getByText("Execution Unit 1", { exact: true }).filter({ visible: true }).waitFor();
+  assert.equal(await properties.getByLabel("Execution track").count(), 0);
 
   await selectSetup("Primary machining");
   assert.equal(await contextPanel.count(), 0);
-  await addProfile.click();
+  await insertProfile();
   await machiningStage.selectOption({ label: "Sub / back-working" });
-  await track.selectOption({ label: "Main Track · Channel 1" });
   await selectSetup("Primary machining");
 
   const expected = ["Profile 1 · Main machining", "Profile 2 · Sub / back-working"];
@@ -185,7 +185,7 @@ try {
   await setup.click();
   assert.deepEqual(await tileNames(), []);
   await properties.getByRole("button", { name: "Add Context" }).click();
-  await addProfile.click();
+  await insertProfile();
   assert.deepEqual(await tileNames(), ["Profile 3 · Main machining"]);
   await setupSelector.click();
   assert.deepEqual(await setupOptions.getByRole("option").allTextContents(), ["Primary machining", "Setup 2"]);
@@ -212,30 +212,159 @@ try {
   assert.equal(await setupSelector.textContent(), "Setup 2");
   await properties.getByRole("button", { name: "Delete setup" }).click();
   assert.deepEqual(await tileNames(), expected);
-  const selectorBox = await setupSelector.boundingBox();
-  const navigationBox = await timeline.locator(".timeline__controls").boundingBox();
-  const firstTileBox = await tiles.first().boundingBox();
-  assert.ok(selectorBox.x < navigationBox.x && navigationBox.x < firstTileBox.x);
-  assert.ok(Math.abs(selectorBox.y + selectorBox.height / 2 - firstTileBox.y - firstTileBox.height / 2) < 1);
-  const topPositions = await tiles.evaluateAll((buttons) => buttons.map((button) => button.getBoundingClientRect().top));
-  assert.equal(new Set(topPositions).size, 1);
+  assert.equal(await palette.count(), 0);
+  assert.equal(await insertTile.count(), 1);
+  const tileBounds = await tiles.first().boundingBox();
+  const insertBounds = await insertTile.boundingBox();
+  assert.deepEqual([insertBounds.width, insertBounds.height], [tileBounds.width, tileBounds.height]);
+  assert.equal(await insertTile.evaluate((tile) => getComputedStyle(tile).borderTopStyle), "dashed");
+  await openPalette();
+  const paletteBounds = await palette.boundingBox();
+  assert.ok(paletteBounds.y + paletteBounds.height <= insertBounds.y);
+  assert.equal(await page.getByRole("toolbar", { name: "Manufacturing" }).count(), 0);
+  for (const instruction of ["Tool", "Spindle", "Coolant", "Approach", "Retract", "Correction"]) {
+    assert.equal(await palette.getByRole("button", { name: instruction, exact: true }).isDisabled(), true);
+  }
+  await palette.getByRole("button", { name: "Close insertion palette" }).click();
+  assert.equal(await palette.count(), 0);
 
   const first = history.getByRole("button", { name: expected[0] });
   await first.focus();
   await first.press("Enter");
   assert.equal(await first.getAttribute("aria-pressed"), "true");
-  assert.equal(await track.inputValue(), "unit-1/track-2");
-  await track.selectOption({ label: "Unassigned" });
+  const initialPlan = () => page.evaluate(() => window.whittle.useApp.getState().doc.manufacturing.processPlan);
+  const originalPlan = await initialPlan();
+  await timeline.getByRole("button", { name: "Add track" }).click();
+  const primary = history.getByRole("group", { name: "Track 1", exact: true });
+  const secondary = history.getByRole("group", { name: "Track 2", exact: true });
+  await first.dragTo(secondary.locator("[data-drop-end]"));
+  await secondary.getByRole("button", { name: expected[0], exact: true }).waitFor();
+  assert.equal((await initialPlan())[0].processId, originalPlan[0].processId);
+  assert.equal(await secondary.getByRole("button", { name: "Remove Track 2" }).isDisabled(), true);
+  const firstBox = await first.boundingBox();
+  await openPalette();
+  await addProfile.dragTo(first, { targetPosition: { x: 3, y: firstBox.height / 2 } });
+  const inserted = secondary.getByRole("button", { name: "Profile 3 · Main machining" });
+  await inserted.waitFor();
+  const insertedPlan = await initialPlan();
+  assert.equal(insertedPlan[1].processId, originalPlan[0].processId);
+  assert.equal(insertedPlan[0].trackId, insertedPlan[1].trackId);
+  await first.dragTo(inserted, { targetPosition: { x: 3, y: (await inserted.boundingBox()).height / 2 } });
+  assert.equal((await initialPlan())[0].processId, originalPlan[0].processId);
+  await inserted.click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Delete", exact: true }).click();
+  await page.getByRole("button", { name: "Delete", exact: true }).click();
+  const secondTile = primary.getByRole("button", { name: expected[1], exact: true });
+  // Keep the existing machining-stage boundary rules while moving an operation between populated tracks.
+  await secondTile.click();
+  await machiningStage.selectOption("main");
+  const mainTile = primary.getByRole("button", { name: "Profile 2 · Main machining", exact: true });
+  await first.dragTo(mainTile, { targetPosition: { x: 3, y: (await mainTile.boundingBox()).height / 2 } });
+  await primary.getByRole("button", { name: expected[0], exact: true }).waitFor();
+  await machiningStage.selectOption("sub");
+  await secondary.getByRole("button", { name: "Rename Track 2" }).click();
+  await page.getByRole("textbox", { name: "Name", exact: true }).fill("Finishing track");
+  await page.getByRole("button", { name: "Rename", exact: true }).click();
+  const finishing = history.getByRole("group", { name: "Finishing track", exact: true });
+  await finishing.getByRole("button", { name: "Remove Finishing track" }).click();
   assert.deepEqual(await tileNames(), expected);
-  await selectSetup("Primary machining");
-  await first.click();
-  assert.equal(await track.inputValue(), "");
 
-  const manufacturingHeight = await timeline.evaluate((bar) => bar.getBoundingClientRect().height);
+  const setupMarker = timeline.getByRole("slider", { name: "Timeline marker" });
+  const goToStart = timeline.getByRole("button", { name: "Roll back to start" });
+  const goToEnd = timeline.getByRole("button", { name: "Go to end" });
+  const stepForward = timeline.getByRole("button", { name: "Step forward" });
+  await timeline.getByRole("button", { name: "Add track" }).click();
+  const primaryHeader = primary.getByRole("button", { name: "Track 1", exact: true });
+  const secondaryHeader = secondary.getByRole("button", { name: "Track 2", exact: true });
+  await primaryHeader.click();
+  assert.equal(await goToEnd.isDisabled(), true);
+  await secondaryHeader.click();
+  assert.equal(await primaryHeader.getAttribute("aria-pressed"), "false");
+  assert.equal(await secondaryHeader.getAttribute("aria-pressed"), "true");
+  assert.equal(await secondary.getByRole("slider").getAttribute("aria-valuenow"), "0");
+  assert.equal(await primary.getByRole("slider").count(), 0);
+  for (let i = 0; i < 3; i++) await insertProfile();
+  const thirdInTrack = secondary.getByRole("button", { name: "Profile 3 · Main machining" });
+  const lastInTrack = secondary.getByRole("button", { name: "Profile 5 · Main machining" });
+  await goToStart.click();
+  await stepForward.click();
+  assert.equal(await setupMarker.getAttribute("aria-valuenow"), "1");
+  await primaryHeader.click();
+  assert.equal(await primary.getByRole("slider").getAttribute("aria-valuenow"), "2");
+  await goToStart.click();
+  await secondaryHeader.click();
+  assert.equal(await secondary.getByRole("slider").getAttribute("aria-valuenow"), "1");
+  const beforeCancel = await initialPlan();
+  const selectionBeforeCancel = await tiles.evaluateAll((buttons) => buttons.map((button) => button.getAttribute("aria-pressed")));
+  await openPalette();
+  await palette.getByRole("button", { name: "Close insertion palette" }).click();
+  assert.deepEqual(await initialPlan(), beforeCancel);
+  assert.deepEqual(await tiles.evaluateAll((buttons) => buttons.map((button) => button.getAttribute("aria-pressed"))), selectionBeforeCancel);
+  assert.equal(await secondaryHeader.getAttribute("aria-pressed"), "true");
+  assert.equal(await setupMarker.getAttribute("aria-valuenow"), "1");
+  assert.equal(await secondary.getByRole("button", { name: "Insert instruction", exact: true }).count(), 1);
+  assert.equal(await primary.getByRole("button", { name: "Insert instruction", exact: true }).count(), 0);
+  await openPalette();
+  await palette.getByRole("button", { name: "Add contour milling" }).click();
+  assert.equal(await palette.count(), 0);
+  assert.equal(await setupMarker.getAttribute("aria-valuenow"), "2");
+  const middle = secondary.getByRole("button", { name: "Contour 6 · Main machining" });
+  assert.deepEqual(await secondary.locator("button.step[data-history-step]").evaluateAll((steps) => steps.map((step) => step.getAttribute("aria-label"))),
+    ["Profile 3 · Main machining", "Contour 6 · Main machining", "Profile 4 · Main machining", "Profile 5 · Main machining"]);
+
+  await first.click();
+  await thirdInTrack.click({ modifiers: ["ControlOrMeta"] });
+  assert.equal(await secondaryHeader.getAttribute("aria-pressed"), "true");
+  assert.equal(await first.getAttribute("aria-pressed"), "true");
+  assert.equal(await thirdInTrack.getAttribute("aria-pressed"), "true");
+  await thirdInTrack.click({ modifiers: ["ControlOrMeta"] });
+  assert.equal(await thirdInTrack.getAttribute("aria-pressed"), "false");
+  await primaryHeader.click();
+  assert.equal(await first.getAttribute("aria-pressed"), "true");
+  await page.keyboard.press("Escape");
+  assert.equal(await first.getAttribute("aria-pressed"), "false");
+  assert.equal(await primaryHeader.getAttribute("aria-pressed"), "true");
+  assert.equal(await setupMarker.getAttribute("aria-valuenow"), "0");
+
+  await first.click();
+  await lastInTrack.click({ modifiers: ["Shift"] });
+  assert.equal(await first.getAttribute("aria-pressed"), "false");
+  assert.equal(await lastInTrack.getAttribute("aria-pressed"), "true");
+  await thirdInTrack.click();
+  await lastInTrack.click({ modifiers: ["Shift"] });
+  assert.equal(await secondary.locator("button.step[aria-pressed=true]").count(), 4);
+  assert.equal(await middle.locator(".cam-toolpath-dot").count(), 1);
+  const confirmBulkDelete = () => page.getByRole("alertdialog", { name: "Delete selected operations" })
+    .getByRole("button", { name: "Delete", exact: true }).click();
+  await middle.click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Delete", exact: true }).click();
+  await confirmBulkDelete();
+  assert.deepEqual(await tileNames(), expected);
+  await command("undo");
+  await thirdInTrack.waitFor();
+
+  await first.click();
+  await thirdInTrack.click({ modifiers: ["ControlOrMeta"] });
+  await page.keyboard.press("Backspace");
+  await confirmBulkDelete();
+  await first.waitFor({ state: "detached" });
+  await thirdInTrack.waitFor({ state: "detached" });
+  await command("undo");
+  await first.waitFor();
+  await thirdInTrack.click();
+  await lastInTrack.click({ modifiers: ["Shift"] });
+  await page.keyboard.press("Delete");
+  await confirmBulkDelete();
+  assert.deepEqual(await tileNames(), expected);
+  await secondary.getByRole("button", { name: "Remove Track 2" }).click();
+  await primaryHeader.click();
+  await goToEnd.click();
+  console.log("ok  Active-track markers, insertion, and cross-track step selection and deletion");
+
   await page.getByRole("tab", { name: "Solid" }).click();
   const cadTimeline = page.getByLabel("Timeline", { exact: true });
   await cadTimeline.waitFor();
-  assert.equal(await cadTimeline.evaluate((bar) => bar.getBoundingClientRect().height), manufacturingHeight);
+  await page.getByRole("toolbar", { name: "Modeling tools" }).waitFor();
   await manufacturing.click();
   await first.waitFor();
   assert.deepEqual(await tileNames(), expected);
@@ -287,7 +416,7 @@ try {
   assert.deepEqual(await tileNames(), expected);
 
   await selectSetup("Primary machining");
-  await addProfile.click();
+  await insertProfile();
   const temporary = history.getByRole("button", { name: "Profile 3 · Main machining", exact: true });
   await temporary.click({ button: "right" });
   await menu.getByRole("menuitem", { name: "Delete", exact: true }).click();
@@ -295,7 +424,7 @@ try {
   assert.deepEqual(await tileNames(), expected);
   assert.deepEqual(await cadHistory(), originalCadHistory);
   await first.click();
-  console.log("ok  Manufacturing part history, selection, track assignment and native workspace switching");
+  console.log("ok  Manufacturing part history, selection, track ownership and native workspace switching");
 
   await page.evaluate(() => window.whittle.api.run("add_sketch", {
     name: "CAM test circle", plane: "XY", offset: 10,
@@ -307,7 +436,7 @@ try {
     return builtDoc === doc && regen?.sketches.some((item) => item.id === sketch?.id);
   });
   await manufacturing.click();
-  await addProfile.click();
+  await insertProfile();
   await properties.getByRole("heading", { name: "Profile 3" }).waitFor();
   const pickSketch = properties.getByRole("button", { name: "Pick Sketch", exact: true });
   await pickSketch.click();

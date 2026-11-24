@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 import {
-  plannedOperations, contourTravel, exportAptProgram, type AptOperation, addProcess, addSetup, getProcessPlan, validateProject,
-  type CamCuttingConditions, type CamGeometryRef, type CamMachiningStage, type CamPlanItem, type CamProcess, type CamProject, type CamSetup, type CircularProfileSettings, type ContourMillingSettings, type FacingMillingSettings, type PocketMillingSettings,
+  plannedOperations, contourTravel, exportAptProgram, type AptOperation, insertTimelineOperation, addSetup, getProcessPlan, validateProject,
+  type TimelineDropTarget, type CamCuttingConditions, type CamGeometryRef, type CamMachiningStage, type CamPlanItem, type CamProcess, type CamProject, type CamSetup, type CircularProfileSettings, type ContourMillingSettings, type FacingMillingSettings, type PocketMillingSettings,
 } from "@whittle/cam";
+import { demoMachine } from "../machine";
 import type { CamCadAdapter } from "../cadAdapter";
-import { demoMachine, demoTracks, trackKey } from "../machine";
 import { uid } from "@whittle/core";
 import { SetupEditor } from "./SetupEditor";
 import { ContourMilling } from "./ContourMilling";
@@ -14,7 +14,6 @@ import { useToolpathGeneration } from "../useToolpathGeneration";
 import { useApp } from "../../state/store";
 import { downloadApt } from "../downloadApt";
 import { ProfileExport } from "./ProfileExport";
-import { MillIcon } from "./icons/MillIcon";
 import { CamTimeline, machiningLabels, stageLabels } from "./CamTimeline";
 import "./cam.css";
 
@@ -34,6 +33,7 @@ export function useCamWorkspace(
   canPickGeometry: boolean,
   clearPickSelection: () => void,
 ) {
+  const camSession = useApp((state) => state.camToolpathSession);
   const [geometryPick, setGeometryPick] = useState<{ documentId?: string; key?: string; kind: "sketch" | "island" | "face" | "facing-face" }>();
   const [selection, setSelection] = useState<{ documentId?: string; key?: string }>({});
   const [contextSelection, setContextSelection] = useState<{ documentId?: string; setupId?: string; id?: string }>({});
@@ -141,10 +141,6 @@ export function useCamWorkspace(
   const operationTool = tools.find((tool) => tool.id === process?.toolPositionId);
   const cutting = operationTool && cad.resolveToolCutting?.(operationTool.id);
   const toolDiameter = cutting?.ok && cutting.value.family === "FLAT" ? cutting.value.diameter : undefined;
-  const assignedTrack = process?.track;
-  const track = assignedTrack && demoTracks.find((item) => trackKey(item) === trackKey(assignedTrack));
-  const unit = track && demoMachine.executionUnits.find((item) => item.id === track.unitId);
-
   function createSetup() {
     const id = uid("setup");
     let number = project.setups.length + 1;
@@ -154,7 +150,7 @@ export function useCamWorkspace(
     setSelectedKey(`setup:${id}`);
   }
 
-  function createProfile(mode: "profile" | "contour" | "pocket" | "adaptive" | "facing" = "profile") {
+  function createProfile(mode: "profile" | "contour" | "pocket" | "adaptive" | "facing", target: TimelineDropTarget) {
     if (!setup || !context) return;
     const number = project.processes.length + 1;
     const kind = mode === "contour" ? "profile" : mode;
@@ -169,10 +165,21 @@ export function useCamWorkspace(
       ?? (setup.part?.kind === "sketch" ? setup.part : undefined);
     const name = { profile: "Profile", contour: "Contour", pocket: "Pocket", adaptive: "Adaptive", facing: "Facing" }[mode];
     const action = { profile: "Add circular profile", contour: "Add contour milling", pocket: "Add pocket milling", adaptive: "Add adaptive clearing", facing: "Add facing milling" }[mode];
-    setProject((current) => addProcess(current, {
-      id, name: `${name} ${number}`, setupId: setup.id, contextId: context.id, kind, contour, contourMilling, pocketMilling, facingMilling, orientation: mode === "profile" ? undefined : { kind: "setup" },
-    }), action);
-    setSelectedKey(`process:${id}`);
+    const operation: CamProcess = {
+      id, name: `${name} ${number}`, setupId: setup.id, contextId: context.id, kind, contour,
+      contourMilling, pocketMilling, facingMilling, orientation: mode === "profile" ? undefined : { kind: "setup" },
+    };
+    let created = false;
+    setProject((current) => {
+      if (!current.setups.some((item) => item.id === setup.id && item.contexts?.some(({ id }) => id === context.id))) return current;
+      const next = insertTimelineOperation(current, operation, target);
+      created = next !== current;
+      return next;
+    }, action);
+    if (created) {
+      selectTile(`process:${id}`);
+      return id;
+    }
   }
 
   function removeContext(id: string) {
@@ -196,17 +203,6 @@ export function useCamWorkspace(
       processPlan: getProcessPlan(current).map((item) =>
         item.kind === "process" && itemKey(item) === selectedKey ? { ...item, stage } : item),
     }), "Change machining stage");
-  }
-
-  function changeTrack(key: string) {
-    const assignment = demoTracks.find((item) => trackKey(item) === key);
-    setProject((current) => ({
-      ...current,
-      processes: current.processes.map((item) => item.id === process?.id ? {
-        ...item,
-        track: assignment && { unitId: assignment.unitId, id: assignment.id },
-      } : item),
-    }), "Assign execution track");
   }
 
   function changeOrientation(orientation: CamProcess["orientation"]) {
@@ -263,14 +259,13 @@ export function useCamWorkspace(
     openProperties();
   }
 
-  const commands = [
-    { id: "setup", label: "Create setup", icon: MillIcon, enabled: true, run: createSetup },
-    { id: "profile", label: "Add profile", icon: MillIcon, enabled: !!setup && !!context, run: () => createProfile() },
-    { id: "contour", label: "Add contour milling", icon: MillIcon, enabled: !!setup && !!context, run: () => createProfile("contour") },
-    { id: "pocket", label: "Add pocket milling", icon: MillIcon, enabled: !!setup && !!context, run: () => createProfile("pocket") },
-    { id: "adaptive", label: "Add adaptive clearing", icon: MillIcon, enabled: !!setup && !!context, run: () => createProfile("adaptive") },
-    { id: "facing", label: "Add facing milling", icon: MillIcon, enabled: !!setup && !!context, run: () => createProfile("facing") },
-  ];
+  const strategies = [
+    { id: "profile", name: "Profile", label: "Add profile" },
+    { id: "contour", name: "Contour", label: "Add contour milling" },
+    { id: "pocket", name: "Pocket", label: "Add pocket milling" },
+    { id: "adaptive", name: "Adaptive", label: "Add adaptive clearing" },
+    { id: "facing", name: "Facing", label: "Add facing milling" },
+  ] as const;
   const millingSettings = process?.facingMilling ?? process?.pocketMilling ?? process?.contourMilling;
   const selectedStage = selectedItem && selectedItem.kind !== "process" ? selectedItem : undefined;
   const errors = [...validateProject(project), ...sourceErrors];
@@ -392,22 +387,6 @@ export function useCamWorkspace(
             <option value="main">{machiningLabels.main}</option>
             <option value="sub">{machiningLabels.sub}</option>
           </select></dd>
-          <dt><label htmlFor="cam-execution-track">Execution track</label></dt>
-          <dd><select id="cam-execution-track" value={assignedTrack ? trackKey(assignedTrack) : ""}
-            onChange={(event) => changeTrack(event.target.value)}>
-            <option value="">Unassigned</option>
-            {assignedTrack && !track && <option value={trackKey(assignedTrack)}>Track unavailable</option>}
-            {demoMachine.executionUnits.map((executionUnit) => (
-              <optgroup key={executionUnit.id} label={executionUnit.name}>
-                {executionUnit.tracks.map((item) => (
-                  <option key={item.id} value={trackKey({ unitId: executionUnit.id, id: item.id })}>
-                    {item.name} · Channel {item.channel}
-                  </option>
-                ))}
-              </optgroup>
-            ))}
-          </select></dd>
-          {unit && <><dt>Execution unit</dt><dd>{unit.name}</dd></>}
         </>}
       </dl>
       {process && <>
@@ -490,8 +469,15 @@ export function useCamWorkspace(
     </div>
   );
 
-  const timeline = <CamTimeline key={documentId} project={project} selectedKey={selectedKey}
-    setupId={setup?.id} toolpathStatus={(id) => generation.get(id).status} select={selectTile} save={setProject} />;
+  const timeline = <CamTimeline key={`${documentId}/${camSession}`} project={project} selectedKey={selectedKey}
+    setupId={setup?.id} strategies={strategies.map(({ id, name, label }) => ({
+      id, name, label, enabled: !!setup && !!context, add: (target) => createProfile(id, target),
+    }))}
+    createSetup={() => { createSetup(); openProperties(); }}
+    generateAll={() => { void generation.generateAll(); openProperties(); }}
+    generationDisabled={!generation.active.length || batchRunning}
+    generationProgress={batchRunning ? `${batch.done} / ${batch.total}` : undefined}
+    toolpathStatus={(id) => generation.get(id).status} select={selectTile} save={setProject} />;
 
-  return { commands, properties, timeline, batch, batchRunning, generateAll: generation.generateAll, hasOperations: !!generation.active.length, pickingSketch, pickingFace: pickingFace || pickingFacingFace };
+  return { properties, timeline, pickingSketch, pickingFace: pickingFace || pickingFacingFace };
 }

@@ -3,6 +3,7 @@ import { ManufacturingSlots } from "./cam/Manufacturing";
 import { commandById, commandForKey, isAvailable } from "./state/commands";
 import { openDroppedFile, startAutosave, startDesktop, startLaunchQueue } from "./state/files";
 import { aiAvailable, apiHooks, detectPlatform } from "./state/platform";
+import { camTimelineActions } from "./state/steps";
 import { startKernel } from "./state/kernel";
 import { startOffline } from "./state/offline";
 import { checkForUpdate } from "./state/updates";
@@ -70,6 +71,11 @@ function onKey(e: KeyboardEvent) {
   // A drawer over the model closes with Escape, before Escape means anything for the model underneath.
   if (e.key === "Escape" && isNarrow() && s.browserOpen) {
     useApp.setState({ browserOpen: false });
+    return;
+  }
+
+  if (s.ribbonTab === "manufacturing" && s.mode.kind === "model" && !s.session && camTimelineActions.handleKey?.(e)) {
+    e.preventDefault();
     return;
   }
 

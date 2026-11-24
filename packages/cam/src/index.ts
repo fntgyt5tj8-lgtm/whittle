@@ -1,8 +1,9 @@
+export { executionTracks, executionTrackId, insertTimelineOperation } from "./operations";
 export { CAM_TOOL_COMPONENT_ROLES } from "./model";
 export { canCut, cuttingComponent, cuttingToolType, CUTTING_TOOL_TYPES } from "./toolGeometry";
 export type { CamCuttingGeometry, CuttingToolType } from "./toolGeometry";
 export type { CamToolComponent, CamToolComponentRole, CamToolPosition, CamToolSourceTransform } from "./model";
-export type { CamCuttingConditions, CamBodyRole, CamCadSource, CamContextFrame, CamGeometryRef, CamWorkpieceContext, CamMachiningStage, CamOperationFolder, CamPlanItem, CamPlanStage, CamProcess, CamProject, CamResult, CamSetup, CircularProfileSettings, FlatEndmill } from "./model";
+export type { CamCuttingConditions, CamBodyRole, CamCadSource, CamContextFrame, CamGeometryRef, CamWorkpieceContext, CamMachiningStage, CamExecutionTrack, CamOperationFolder, CamPlanItem, CamPlanStage, CamProcess, CamProject, CamResult, CamSetup, CircularProfileSettings, FlatEndmill } from "./model";
 export {
   activePlanEnd, addOperationFolder, addPlanStage, addProcess, addSetup, createProject, deletePlannedOperation, getProcessPlan,
   migrateWorkpieceContexts, movePlannedOperation, moveTimelineItems, pastePlannedOperations,

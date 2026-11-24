@@ -389,7 +389,7 @@ const wheelX = (e: React.WheelEvent<HTMLElement>) => {
 };
 
 /** The ribbon: workspace tabs over the tool groups of the chosen tab (a sketch shows its own contextual tab). */
-export function Toolbar({ manufacturing }: { manufacturing?: { label: string; activate: () => void; content: React.ReactNode; fixed?: React.ReactNode } }) {
+export function Toolbar({ manufacturing }: { manufacturing?: { label: string; activate: () => void; content: React.ReactNode } }) {
   const mode = useApp((s) => s.mode);
   const simple = useApp((s) => simpleToolbar(s.prefs));
   // A design that already has surfaces keeps the Surface tab, whatever the profile.
@@ -406,7 +406,7 @@ export function Toolbar({ manufacturing }: { manufacturing?: { label: string; ac
   const manufacturingActive = chosen === "manufacturing" && !!manufacturing;
   const labels = useApp((s) => s.prefs.toolLabels);
   return (
-    <div className="ribbon">
+    <div className={`ribbon ${manufacturingActive ? "ribbon--cam" : ""}`}>
       <div className="ribbon__tabs" role="tablist" aria-label="Workspace">
         {sketching ? (
           <button role="tab" aria-selected className="ribbon__tab ribbon__tab--sketch is-active">
@@ -423,7 +423,7 @@ export function Toolbar({ manufacturing }: { manufacturing?: { label: string; ac
           <button role="tab" aria-selected={manufacturingActive} className={`ribbon__tab ${manufacturingActive ? "is-active" : ""}`}
             onClick={manufacturing.activate}>{manufacturing.label}</button>
         )}
-        {!sketching && (
+        {!sketching && !manufacturingActive && (
           <button
             className="ribbon__alltools link"
             onClick={() => setPrefs({ allTools: simple })}
@@ -433,12 +433,7 @@ export function Toolbar({ manufacturing }: { manufacturing?: { label: string; ac
           </button>
         )}
       </div>
-      {manufacturingActive ? (
-        <div className={`toolbar ${labels ? "" : "toolbar--icons"}`} role="toolbar" aria-label={manufacturing.label}>
-          <div className="toolbar__scroll" onWheel={wheelX}>{manufacturing.content}</div>
-          {manufacturing.fixed && <div className="toolbar__fixed">{manufacturing.fixed}</div>}
-        </div>
-      ) : <RibbonBody tab={tab} />}
+      {manufacturingActive ? manufacturing.content : <RibbonBody tab={tab} />}
     </div>
   );
 }

@@ -180,6 +180,11 @@ export function isCamProject(value: unknown): value is CamProject {
     && Array.isArray(value.setups) && value.setups.every((item) => record(item)
       && typeof item.id === "string" && typeof item.name === "string"
       && (item.part === undefined || geometry(item.part))
+      && (item.executionTracks === undefined || (Array.isArray(item.executionTracks)
+        && item.executionTracks.length > 0 && item.executionTracks.every((track, index, tracks) =>
+          record(track) && typeof track.id === "string" && !!track.id.trim()
+          && typeof track.name === "string" && !!track.name.trim()
+          && tracks.findIndex((candidate) => record(candidate) && candidate.id === track.id) === index)))
       && (item.contexts === undefined ? geometry(item.part) : Array.isArray(item.contexts) && item.contexts.every(context)))
     && Array.isArray(value.processes) && value.processes.every((item) => record(item)
       && typeof item.id === "string" && typeof item.name === "string" && typeof item.setupId === "string"
@@ -237,7 +242,8 @@ export function isCamProject(value: unknown): value is CamProject {
         && typeof item.track.id === "string" && typeof item.track.unitId === "string")))
     && (value.processPlan === undefined || (Array.isArray(value.processPlan) && value.processPlan.every((item) =>
       record(item) && (item.kind === "process"
-        ? typeof item.processId === "string" && (item.stage === "main" || item.stage === "sub")
+        ? typeof item.processId === "string" && (item.trackId === undefined || typeof item.trackId === "string")
+          && (item.stage === "main" || item.stage === "sub")
         : (item.kind === "transfer" || item.kind === "ejection")
           && typeof item.id === "string" && typeof item.setupId === "string"))));
 }

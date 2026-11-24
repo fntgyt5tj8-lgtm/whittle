@@ -5,7 +5,6 @@ import { manufacturingLabel, useCamWorkspace } from "./ui/CamWorkspace";
 import { isNarrow, mutate, useApp } from "../state/store";
 import { commandById } from "../state/commands";
 import { Toolbar, ToolButton } from "../ui/Chrome";
-import { Icon } from "../ui/icons";
 import { PropertiesPanel } from "../ui/PropertiesPanel";
 import { Timeline } from "../ui/Timeline";
 import { ToolProperties } from "./ui/ToolPositions";
@@ -50,47 +49,13 @@ export function ManufacturingSlots({ enabled, children }: { enabled: boolean; ch
   const ribbon = enabled ? {
     label: manufacturingLabel,
     activate: () => useApp.setState({ ribbonTab: "manufacturing", ...(isNarrow() ? { panelOpen: false } : {}) }),
-    fixed: isCam && (
-      <div className="toolgroup" role="group" aria-label="Toolpaths">
-        <div className="toolgroup__tools">
-          <button className="tool" type="button" disabled={!cam.hasOperations || cam.batchRunning || editing}
-            aria-label="Generate All Toolpaths" title="Generate All Toolpaths"
-            onClick={() => { void cam.generateAll(); openProperties(); }}>
-            <Icon name="refresh" />
-            <span className="tool__label">Generate All</span>
-          </button>
-        </div>
-        <span className="toolgroup__label">{cam.batchRunning ? `${cam.batch?.done} / ${cam.batch?.total}` : "Toolpaths"}</span>
-      </div>
-    ),
     content: (
-      <>
-        <div className="toolgroup" role="group" aria-label="CAM documents">
-          <div className="toolgroup__tools">
-            {["new-cam", "open-cam", "save-cam", "save-cam-as", ...(!isCam && doc.manufacturing ? ["migrate-cam"] : [])]
-              .map((id) => <ToolButton key={id} c={commandById(id)} />)}
-          </div>
-          <span className="toolgroup__label">CAM documents</span>
-        </div>
-        {isCam && <div className="toolgroup" role="group" aria-label="CAM geometry">
-          <div className="toolgroup__tools">
-            {["parts", "import", "move", "plane", "csys", "sketch", "verify-cad-source"].map((id) => <ToolButton key={id} c={commandById(id)} />)}
-          </div>
-          <span className="toolgroup__label">CAM geometry</span>
-        </div>}
-        {isCam && <div className="toolgroup" role="group" aria-label="Setup and operations">
-          <div className="toolgroup__tools">
-            {cam.commands.map(({ id, label, icon: Icon, enabled, run }) => (
-              <button className="tool" key={id} type="button" disabled={!enabled} aria-label={label} title={label}
-                onClick={() => { run(); openProperties(); }}>
-                <Icon />
-                <span className="tool__label">{label}</span>
-              </button>
-            ))}
-          </div>
-          <span className="toolgroup__label">Setup and operations</span>
-        </div>}
-      </>
+      <div className="cam-document-actions" role="group" aria-label="CAM document and geometry commands">
+        {["new-cam", "open-cam", "save-cam", "save-cam-as",
+          ...(!isCam && doc.manufacturing ? ["migrate-cam"] : []),
+          ...(isCam ? ["parts", "import", "move", "plane", "csys", "sketch", "verify-cad-source"] : []),
+        ].map((id) => <ToolButton key={id} c={commandById(id)} />)}
+      </div>
     ),
   } : undefined;
 

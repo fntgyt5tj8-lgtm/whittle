@@ -1,4 +1,4 @@
-import type { CamContextFrame, CamMachiningStage, CamOperationFolder, CamWorkpieceContext, CamPlanItem, CamPlanStage, CamProcess, CamProject, CamSetup } from "./model";
+import type { CamContextFrame, CamExecutionTrack, CamMachiningStage, CamOperationFolder, CamWorkpieceContext, CamPlanItem, CamPlanStage, CamProcess, CamProject, CamSetup } from "./model";
 
 export function createProject(name: string): CamProject {
   return { schemaVersion: 1, name, setups: [], processes: [], processPlan: [] };
@@ -75,10 +75,58 @@ export function movePlannedOperation(project: CamProject, id: string, targetId: 
 
 export type TimelineDragSource = { operationId: string } | { folderId: string };
 export type TimelineDropTarget = {
-  operationId: string;
+  operationId?: string;
   side: "before" | "after";
   folderId?: string;
+  track?: { setupId: string; id: string };
 };
+
+const defaultTracks: readonly CamExecutionTrack[] = [{ id: "default", name: "Track 1" }];
+
+export function executionTracks(setup: CamSetup): readonly CamExecutionTrack[] {
+  return setup.executionTracks?.length ? setup.executionTracks : defaultTracks;
+}
+
+export function executionTrackId(setup: CamSetup, trackId?: string): string {
+  const tracks = executionTracks(setup);
+  return tracks.find(({ id }) => id === trackId)?.id ?? tracks[0]!.id;
+}
+
+function timelineTarget(project: CamProject, target: TimelineDropTarget) {
+  const anchor = project.processes.find(({ id }) => id === target.operationId);
+  const setup = project.setups.find(({ id }) => id === (target.track?.setupId ?? anchor?.setupId));
+  if (!setup || (target.operationId !== undefined && anchor?.setupId !== setup.id)
+    || (target.track && !executionTracks(setup).some(({ id }) => id === target.track?.id))) return;
+  const plan = getProcessPlan(project);
+  const index = plan.findIndex((item) => item.kind === "process" && item.processId === target.operationId);
+  const entry = plan[index];
+  if (target.operationId !== undefined && (entry?.kind !== "process" || (target.track
+    && executionTrackId(setup, entry.trackId) !== target.track.id))) return;
+  if (target.folderId && !project.operationFolders?.some(({ id, operationIds }) =>
+    id === target.folderId && target.operationId !== undefined && operationIds.includes(target.operationId))) return;
+  return { setup, plan, index };
+}
+
+export function insertTimelineOperation(project: CamProject, process: CamProcess, target: TimelineDropTarget): CamProject {
+  const destination = timelineTarget(project, target);
+  if (!destination || destination.setup.id !== process.setupId) return project;
+  const { plan, index } = destination;
+  const boundary = index < 0 ? plan.length : index + Number(target.side === "after");
+  const end = activePlanEnd(project);
+  const operation: CamPlanItem = {
+    kind: "process", processId: process.id, stage: "main",
+    trackId: target.track?.id,
+  };
+  let updated = rollBackPlan({
+    ...project, processes: [...project.processes, process],
+    processPlan: [...plan.slice(0, boundary), operation, ...plan.slice(boundary)],
+  }, end + Number(project.planRollback === undefined || boundary < end));
+  if (target.folderId) {
+    updated = { ...updated, operationFolders: updated.operationFolders?.map((folder) =>
+      folder.id === target.folderId ? { ...folder, operationIds: [...folder.operationIds, process.id] } : folder) };
+  }
+  return updated;
+}
 
 /** Apply the order and membership change together so one undo restores both. */
 export function moveTimelineItems(project: CamProject, source: TimelineDragSource, target: TimelineDropTarget): CamProject {
@@ -88,14 +136,15 @@ export function moveTimelineItems(project: CamProject, source: TimelineDragSourc
     ? folders.find(({ id }) => id === source.folderId)?.operationIds
     : [source.operationId];
   const destination = folders.find(({ id }) => id === target.folderId);
-  if (!ids?.length || (target.folderId && (!destination?.operationIds.includes(target.operationId) || movingFolder))) {
+  if (!ids?.length || (target.folderId && (!target.operationId || !destination?.operationIds.includes(target.operationId) || movingFolder))) {
     return project;
   }
 
-  const plan = getProcessPlan(project);
-  const targetIndex = plan.findIndex((item) => item.kind === "process" && item.processId === target.operationId);
-  if (targetIndex < 0 || (movingFolder && ids.includes(target.operationId))) return project;
-  const setupId = project.processes.find(({ id }) => id === target.operationId)?.setupId;
+  const resolved = timelineTarget(project, target);
+  if (!resolved || (movingFolder && target.operationId && ids.includes(target.operationId))
+    || (resolved.index < 0 && !target.track)) return project;
+  const { plan, index: targetIndex, setup } = resolved;
+  const setupId = setup.id;
   if (!setupId || ids.some((id) => !project.processes.some((item) => item.id === id && item.setupId === setupId))) return project;
   const boundary = targetIndex + (target.side === "after" ? 1 : 0);
   const movingIds = new Set(ids);
@@ -103,7 +152,7 @@ export function moveTimelineItems(project: CamProject, source: TimelineDragSourc
   if (moved.length !== movingIds.size) return project;
 
   let insertionIndex = boundary;
-  for (const id of movingIds) {
+  for (const id of targetIndex < 0 ? [] : movingIds) {
     const from = plan.findIndex((item) => item.kind === "process" && item.processId === id);
     if (from < boundary) insertionIndex--;
     // The operation immediately across the insertion boundary is untouched.
@@ -111,8 +160,17 @@ export function moveTimelineItems(project: CamProject, source: TimelineDragSourc
     if (crossed?.kind !== "process" || planMoveProblem(project, id, crossed.processId)) return project;
   }
 
-  const reordered = plan.filter((item) => item.kind !== "process" || !movingIds.has(item.processId));
-  reordered.splice(insertionIndex, 0, ...moved);
+  // An empty destination changes ownership without shifting the existing global plan.
+  const reordered = targetIndex < 0 ? [...plan] : plan.filter((item) => item.kind !== "process" || !movingIds.has(item.processId));
+  if (targetIndex >= 0) reordered.splice(insertionIndex, 0, ...moved);
+  if (target.track) {
+    const trackId = target.track.id;
+    for (const [index, item] of reordered.entries()) {
+      if (item.kind === "process" && movingIds.has(item.processId) && executionTrackId(setup, item.trackId) !== trackId) {
+        reordered[index] = { ...item, trackId };
+      }
+    }
+  }
   const orderChanged = reordered.some((item, index) => item !== plan[index]);
   const membershipChanged = "operationId" in source
     && folders.find((folder) => folder.operationIds.includes(source.operationId)) !== destination;
@@ -134,20 +192,22 @@ export function moveTimelineItems(project: CamProject, source: TimelineDragSourc
 }
 
 export function pastePlannedOperations(
-  project: CamProject, copies: readonly { operation: CamProcess; stage: CamMachiningStage }[],
+  project: CamProject, copies: readonly { operation: CamProcess; stage: CamMachiningStage; trackId?: string }[],
+  at = activePlanEnd(project),
 ): CamProject {
   if (!copies.length) return project;
   const end = activePlanEnd(project);
   const plan = getProcessPlan(project);
+  const boundary = Math.max(0, Math.min(at, plan.length));
   return rollBackPlan({
     ...project,
     processes: [...project.processes, ...copies.map(({ operation }) => operation)],
     processPlan: [
-      ...plan.slice(0, end),
-      ...copies.map(({ operation, stage }) => ({ kind: "process" as const, processId: operation.id, stage })),
-      ...plan.slice(end),
+      ...plan.slice(0, boundary),
+      ...copies.map(({ operation, stage, trackId }) => ({ kind: "process" as const, processId: operation.id, stage, trackId })),
+      ...plan.slice(boundary),
     ],
-  }, end + copies.length);
+  }, end + (boundary <= end ? copies.length : 0));
 }
 
 /** Move these operations out of their old folders and into a new folder. */

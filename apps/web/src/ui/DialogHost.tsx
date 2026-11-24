@@ -192,7 +192,8 @@ export function TooltipLayer() {
         if (current.current !== el || !el.isConnected) return;
         const r = el.getBoundingClientRect();
         const below = r.top < 64;
-        const pos = { text, x: r.left + r.width / 2, y: below ? r.bottom + 8 : r.top - 8, below };
+        const gap = el.matches(".cam-timeline__track .step, .cam-timeline__track .folder") ? 16 : 8;
+        const pos = { text, x: r.left + r.width / 2, y: below ? r.bottom + gap : r.top - gap, below };
         setTip(pos);
         // Keep hovering and a tool's tooltip grows into a picture and the steps.
         const id = el.getAttribute("data-tour") ?? "";
