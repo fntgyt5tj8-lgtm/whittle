@@ -640,7 +640,7 @@ export function CamTimeline({ project, selectedKey, setupId, strategies, createS
                   title={rowLast ? "Move operations out of this track to remove it" : `Remove ${rowTrack.name}`}
                   aria-label={`Remove ${rowTrack.name}`} onClick={() => removeTrack(rowTrack.id)}><Icon name="trash" size={14} /></button>
               </div>
-              <div className="timeline__track cam-timeline__track" data-track-id={rowTrack.id}
+              <div className={`timeline__track cam-timeline__track ${active ? "" : "cam-timeline__track--inactive"}`} data-track-id={rowTrack.id}
                 onKeyDown={(event) => {
                   if (event.key !== "Tab" || event.altKey || event.ctrlKey || event.metaKey || menu || folderMenu) return;
                   const strip = event.currentTarget;

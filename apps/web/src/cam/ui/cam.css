@@ -16,6 +16,11 @@
   flex: none;
 }
 
+.cam-timeline__track--inactive .step:not([class*="cam-drop--"]),
+.cam-timeline__track--inactive .cam-timeline__folder:not([class*="cam-drop--"]) .folder {
+  filter: grayscale(1) brightness(0.8);
+}
+
 .cam-timeline__folder {
   display: flex;
   flex: none;
@@ -51,6 +56,11 @@
 
   box-shadow: inset 0 0 0 1px
     color-mix(in oklch, var(--accent) 35%, var(--line));
+}
+
+.cam-timeline__track--inactive .cam-timeline__folder--open:not([class*="cam-drop--"]) {
+  background: var(--bg-2);
+  box-shadow: inset 0 0 0 1px var(--line-soft);
 }
 
 .cam-timeline__folder .folder.is-open {

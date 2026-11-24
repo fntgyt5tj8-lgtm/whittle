@@ -286,6 +286,13 @@ try {
   for (let i = 0; i < 3; i++) await insertProfile();
   const thirdInTrack = secondary.getByRole("button", { name: "Profile 3 · Main machining" });
   const lastInTrack = secondary.getByRole("button", { name: "Profile 5 · Main machining" });
+  const tileFilter = (tile) => tile.evaluate((element) => getComputedStyle(element).filter);
+  assert.equal(await tileFilter(first), "grayscale(1) brightness(0.8)");
+  assert.equal(await tileFilter(thirdInTrack), "none");
+  await primaryHeader.click();
+  assert.equal(await tileFilter(first), "none");
+  assert.equal(await tileFilter(thirdInTrack), "grayscale(1) brightness(0.8)");
+  await secondaryHeader.click();
   await goToStart.click();
   await stepForward.click();
   assert.equal(await setupMarker.getAttribute("aria-valuenow"), "1");
