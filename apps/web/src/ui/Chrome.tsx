@@ -389,7 +389,7 @@ const wheelX = (e: React.WheelEvent<HTMLElement>) => {
 };
 
 /** The ribbon: workspace tabs over the tool groups of the chosen tab (a sketch shows its own contextual tab). */
-export function Toolbar({ manufacturing }: { manufacturing?: { label: string; activate: () => void; content: React.ReactNode } }) {
+export function Toolbar({ manufacturing }: { manufacturing?: { label: string; activate: () => void; content: React.ReactNode; fixed?: React.ReactNode } }) {
   const mode = useApp((s) => s.mode);
   const simple = useApp((s) => simpleToolbar(s.prefs));
   // A design that already has surfaces keeps the Surface tab, whatever the profile.
@@ -436,6 +436,7 @@ export function Toolbar({ manufacturing }: { manufacturing?: { label: string; ac
       {manufacturingActive ? (
         <div className={`toolbar ${labels ? "" : "toolbar--icons"}`} role="toolbar" aria-label={manufacturing.label}>
           <div className="toolbar__scroll" onWheel={wheelX}>{manufacturing.content}</div>
+          {manufacturing.fixed && <div className="toolbar__fixed">{manufacturing.fixed}</div>}
         </div>
       ) : <RibbonBody tab={tab} />}
     </div>

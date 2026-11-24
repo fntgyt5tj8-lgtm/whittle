@@ -756,7 +756,29 @@ try {
     await properties.getByText(`Toolpaths 6 of 6 processed · ${reused} reused`, { exact: true }).waitFor();
     return Math.round(performance.now() - start);
   }
+  const labelPreference = await page.evaluate(() => {
+    const { useApp } = window.whittle;
+    const { prefs } = useApp.getState();
+    useApp.setState({ prefs: { ...prefs, toolLabels: false } });
+    return prefs.toolLabels;
+  });
+  await batchButton.locator("svg").waitFor({ state: "visible" });
+  await batchButton.getByText("Generate All", { exact: true }).waitFor({ state: "hidden" });
+  const viewportSize = page.viewportSize();
+  await page.setViewportSize({ ...viewportSize, width: 760 });
+  const ribbon = page.getByRole("toolbar", { name: "Manufacturing" });
+  const ribbonScroll = ribbon.locator(".toolbar__scroll");
+  assert.equal(await ribbonScroll.evaluate((strip) => strip.scrollWidth > strip.clientWidth), true);
+  const beforeScroll = await batchButton.boundingBox();
+  assert.ok(beforeScroll.x >= 0 && beforeScroll.x + beforeScroll.width <= 760);
+  await ribbonScroll.evaluate((strip) => { strip.scrollLeft = strip.scrollWidth; });
+  assert.deepEqual(await batchButton.boundingBox(), beforeScroll);
+  await page.setViewportSize(viewportSize);
   const coldMs = await generateAll(0);
+  await page.evaluate((toolLabels) => {
+    const { useApp } = window.whittle;
+    useApp.setState({ prefs: { ...useApp.getState().prefs, toolLabels } });
+  }, labelPreference);
   const warmMs = await generateAll(6);
   const workers = page.workers().filter((worker) => worker.url().includes("toolpath.worker"));
   assert.equal(workers.length, await page.evaluate(() => Math.min(2, navigator.hardwareConcurrency || 1)));

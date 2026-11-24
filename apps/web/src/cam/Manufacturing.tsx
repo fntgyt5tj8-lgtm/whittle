@@ -5,6 +5,7 @@ import { manufacturingLabel, useCamWorkspace } from "./ui/CamWorkspace";
 import { isNarrow, mutate, useApp } from "../state/store";
 import { commandById } from "../state/commands";
 import { Toolbar, ToolButton } from "../ui/Chrome";
+import { Icon } from "../ui/icons";
 import { PropertiesPanel } from "../ui/PropertiesPanel";
 import { Timeline } from "../ui/Timeline";
 import { ToolProperties } from "./ui/ToolPositions";
@@ -49,6 +50,19 @@ export function ManufacturingSlots({ enabled, children }: { enabled: boolean; ch
   const ribbon = enabled ? {
     label: manufacturingLabel,
     activate: () => useApp.setState({ ribbonTab: "manufacturing", ...(isNarrow() ? { panelOpen: false } : {}) }),
+    fixed: isCam && (
+      <div className="toolgroup" role="group" aria-label="Toolpaths">
+        <div className="toolgroup__tools">
+          <button className="tool" type="button" disabled={!cam.hasOperations || cam.batchRunning || editing}
+            aria-label="Generate All Toolpaths" title="Generate All Toolpaths"
+            onClick={() => { void cam.generateAll(); openProperties(); }}>
+            <Icon name="refresh" />
+            <span className="tool__label">Generate All</span>
+          </button>
+        </div>
+        <span className="toolgroup__label">{cam.batchRunning ? `${cam.batch?.done} / ${cam.batch?.total}` : "Toolpaths"}</span>
+      </div>
+    ),
     content: (
       <>
         <div className="toolgroup" role="group" aria-label="CAM documents">
@@ -75,15 +89,6 @@ export function ManufacturingSlots({ enabled, children }: { enabled: boolean; ch
             ))}
           </div>
           <span className="toolgroup__label">Setup and operations</span>
-        </div>}
-        {isCam && <div className="toolgroup" role="group" aria-label="Toolpaths">
-          <div className="toolgroup__tools">
-            <button className="tool" type="button" disabled={!cam.hasOperations || cam.batchRunning || editing}
-              onClick={() => { void cam.generateAll(); openProperties(); }}>
-              <span className="tool__label">Generate All Toolpaths</span>
-            </button>
-          </div>
-          <span className="toolgroup__label">{cam.batchRunning ? `${cam.batch?.done} / ${cam.batch?.total}` : "Toolpaths"}</span>
         </div>}
       </>
     ),
