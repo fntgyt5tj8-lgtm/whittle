@@ -122,6 +122,8 @@ export function CamTimeline({ project, selectedKey, setupId, strategies, createS
     setPaletteAnchor(null);
   }
 
+  const [hoveredOperationId, setHoveredOperationId] = useState<string>();
+  const [focusedOperationId, setFocusedOperationId] = useState<string>();
   const [menu, setMenu] = useState<{ key: string; x: number; y: number }>();
   const [drag, setDrag] = useState<{
     source: DragSource;
@@ -155,6 +157,11 @@ export function CamTimeline({ project, selectedKey, setupId, strategies, createS
   useMenuDismiss(!!folderMenu, () => setFolderMenu(undefined));
   const folders = project.operationFolders ?? [];
   const folderOf = new Map(folders.flatMap((folder) => folder.operationIds.map((id) => [id, folder] as const)));
+
+  const previewStep = steps.find(({ operation }) => operation.id === (hoveredOperationId ?? focusedOperationId)
+    && folderOf.get(operation.id)?.open !== false);
+  const previewState = previewStep && (previewStep.planIndex >= planEnd ? " · Rolled back"
+    : previewStep.operation.suppressed ? " · Suppressed" : "");
 
   const selectedFolderOpen = selectedKey?.startsWith("process:") ? folderOf.get(selectedKey.slice(8))?.open : undefined;
   const selectedOperation = useRef<HTMLButtonElement>(null);
@@ -457,7 +464,12 @@ export function CamTimeline({ project, selectedKey, setupId, strategies, createS
         {(!folder || folder.open) && <div className="step-wrap" role="listitem">
           <button type="button" data-history-step ref={selectedKey === key ? selectedOperation : undefined} data-history-index={index} data-history-end={index + 1} className={`step step--${state} ${selected ? "is-selected" : ""} ${dropStyle(key)}`}
             aria-label={name} aria-pressed={selected} aria-description={`Toolpath ${pathStatus}`}
-            title={`${name}${state === "ok" ? "" : state === "suppressed" ? " · Suppressed" : " · Rolled back"} · Toolpath ${pathStatus}\nDouble-click (or Enter) to edit · F2 to rename · drag, or Alt + arrow keys, to reorder`}
+            onMouseEnter={() => setHoveredOperationId(id)}
+            onMouseLeave={() => setHoveredOperationId(undefined)}
+            onFocus={(event) => {
+              if (event.currentTarget.matches(":focus-visible")) setFocusedOperationId(id);
+            }}
+            onBlur={() => setFocusedOperationId(undefined)}
             onClick={(event) => selectStep(id, trackId, event)}
             onDoubleClick={(event) => { if (!event.metaKey && !event.ctrlKey && !event.shiftKey) selectStep(id, trackId); }}
             draggable
@@ -609,6 +621,12 @@ export function CamTimeline({ project, selectedKey, setupId, strategies, createS
             ariaLabel="Timeline setup" value={setupId} options={project.setups.map(({ id, name }) => ({ value: id, label: name }))}
             onChange={(id) => { setSelection(undefined); setDrag(undefined); select(`setup:${id}`); }} />}
           <HistoryControls end={end} count={activeRow.length} setRollback={setVisibleRollback} />
+        </div>
+        <div className="cam-timeline__operation-preview" aria-hidden="true">
+          {previewStep && <>
+            <span>{previewStep.operation.name} · {machiningLabels[previewStep.entry.stage]}{previewState} · Toolpath {toolpathStatus(previewStep.operation.id)}</span>
+            <span className="cam-timeline__operation-shortcuts">Double-click or Enter to edit · F2 to rename · Drag or Alt + arrow keys to reorder</span>
+          </>}
         </div>
         <div className="cam-timeline__setup-actions">
           {generationProgress && <span className="cam-timeline__generation-progress" role="status">{generationProgress}</span>}

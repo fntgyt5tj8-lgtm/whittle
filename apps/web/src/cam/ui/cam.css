@@ -387,9 +387,32 @@
   border: 0;
 }
 
+.cam-timeline__operation-preview {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 0;
+  min-width: 0;
+  padding-inline-start: 4px;
+  color: var(--text-2);
+  font-size: var(--fs-xs);
+  overflow: hidden;
+}
+
+.cam-timeline__operation-preview > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cam-timeline__operation-shortcuts {
+  flex: 1 0 0;
+  color: var(--text-3);
+}
+
 .cam-timeline__setup-actions {
   flex: none;
-  margin-inline-start: auto;
 }
 
 .cam-timeline__action-divider {
